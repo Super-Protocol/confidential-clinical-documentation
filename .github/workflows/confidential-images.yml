@@ -9,10 +9,25 @@
 # covers what recognises the speech and what separates the speakers.
 name: confidential images
 
+# A commit that CANNOT change the image must not build one, and the reason is not
+# runner minutes. BuildKit's cache makes such a build byte-identical, so it
+# publishes the SAME digest and attaches a SECOND attestation to it — naming a
+# different commit. The catalog's pin gate then refuses the pin outright, because
+# "2 attestations disagree about the commit" leaves the claim a reviewer reads
+# with no single answer. That is exactly what happened on the first try at this,
+# with a test-only commit.
+#
+# So the trigger ignores what the image does not contain. Everything else is in
+# the build context: the `ambient_scribe` package, the templates, the UI, the
+# model manifest, the lockfile, and the four licence files that land in
+# /licenses — a change to MODIFICATIONS.md DOES change the image and must build.
 on:
   push:
     branches:
       - confidential/**
+    paths-ignore:
+      - 'tests/**'
+      - 'README.md'
     tags:
       - confidential-v*
   workflow_dispatch:

@@ -239,7 +239,22 @@ transcript, reported as such.
   the score, in the `complete` event. Upstream attached a speaker to every interim result from a
   diarizer that had heard only the audio so far.
 
-## 10. Packaging
+## 10. A commit that cannot change the image must not build one
+
+`.github/workflows/confidential-images.yml` ignores `tests/**` and `README.md` on push, and that
+is a correctness rule rather than a saving.
+
+BuildKit's cache makes a build from a commit that changed nothing in the image **byte-identical**,
+so it publishes the SAME digest and attaches a SECOND build attestation to it, naming a different
+commit. The catalog's pin gate then refuses the pin: *"2 attestations disagree about the commit"* —
+one digest with two provenance claims leaves the claim a reviewer reads with no single answer. A
+test-only commit here did exactly that and failed the `digest provenance` check on the listing's
+pull request.
+
+Everything the image does contain is still a trigger, including `MODIFICATIONS.md`: it is copied to
+`/licenses` inside the image, so a change to this file changes the image and must build one.
+
+## 11. Packaging
 
 One image (`infra/docker/scribe.Dockerfile`) instead of three: the API, the built UI and the model
 weights. `models/manifest.json` pins every model file by sha256 and records its licence;
@@ -255,7 +270,7 @@ engine, which is a separate component.
 `pyproject.toml` / `uv.lock` are upstream's notebook environment and are untouched; no image is
 built from them.
 
-## 11. What is NOT in this fork
+## 12. What is NOT in this fork
 
 * `ambient-patient` and `ace-controller-voice-interface` — the patient agent, its Pipecat/WebRTC
   stack and its TTS. A separate product.
