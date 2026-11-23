@@ -113,3 +113,21 @@ def test_zero_retention_deletes_on_the_next_pass(tmp_path):
     (uploads / "now.wav").write_bytes(b"RIFF")
     time.sleep(0.01)
     assert sweep_audio(uploads, retention_hours=0.0)["deleted"] == 1
+
+
+def test_a_number_written_in_scientific_notation_is_still_a_number(monkeypatch):
+    """`MAX_FILE_SIZE=5.24288e+08` is what a Helm chart emits for 524288000.
+
+    A YAML emitter prints a large float64 in scientific notation, `int()` raises on
+    it, the settings model fails to validate, and the process dies on import. On a
+    confidential cluster space that is a pod which never becomes ready, with no
+    pod-level visibility to read the reason out of. It cost this port fifty minutes
+    of a billed GPU.
+    """
+    from ambient_scribe.deps import Settings
+
+    settings = Settings(max_file_size="5.24288e+08", asr_threads="6",
+                        transcription_timeout="3.6e+03")
+    assert settings.max_file_size == 524288000
+    assert settings.asr_threads == 6
+    assert settings.transcription_timeout == 3600

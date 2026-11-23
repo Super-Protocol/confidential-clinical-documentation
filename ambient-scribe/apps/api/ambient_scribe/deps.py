@@ -11,6 +11,7 @@ from typing import Generator
 import os
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 from dotenv import load_dotenv
 
@@ -119,6 +120,30 @@ class Settings(BaseSettings):
     # System Prompt Configuration
     system_prompt: str = "You are a medical professional creating clinical notes. Be concise and accurate."
     
+    # ---------------------------------------------------------------------
+    # Added by Super Protocol, 2026.
+    #
+    # A number that reaches this process through a Helm chart or a marketplace
+    # parameter arrives as a STRING, and a large one arrives in scientific
+    # notation: `MAX_FILE_SIZE=5.24288e+08`, because a YAML emitter printed a
+    # float64. `int("5.24288e+08")` raises, the model fails to validate, and the
+    # process dies on import — which on a confidential cluster space is a pod
+    # that never becomes ready with no pod-level visibility to read the reason
+    # out of. It cost this port fifty minutes of a billed GPU before a local
+    # cluster showed the traceback, and the same trap bit SUP-890.
+    #
+    # The chart renders integers with `int64` now, which is the real fix. This is
+    # the other half: whatever writes the value, the value is understood.
+    # ---------------------------------------------------------------------
+    @field_validator("max_file_size", "transcription_timeout", "asr_threads",
+                     "asr_beam_size", "max_concurrent_transcriptions",
+                     "streaming_chunk_size", "role_detection_segments", mode="before")
+    @classmethod
+    def _integer_however_written(cls, value):
+        if isinstance(value, str) and value.strip():
+            return int(float(value))
+        return value
+
     class Config:
         env_file = ".env"
         case_sensitive = False

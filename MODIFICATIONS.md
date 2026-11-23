@@ -209,6 +209,12 @@ transcript, reported as such.
 * **One transcription at a time.** CTranslate2 and onnxruntime are both threaded across the whole
   CPU allocation; a second concurrent job makes both slower and makes a published throughput figure
   meaningless.
+* **A number is a number however it is written.** `MAX_FILE_SIZE=5.24288e+08` is what a Helm
+  chart emits for `524288000`: a YAML emitter prints a large float64 in scientific notation,
+  `int()` raises on it, the settings model fails to validate, and the process dies on import.
+  On a confidential cluster space that is a pod which never becomes ready and no pod-level
+  visibility to read the reason out of — it cost this port fifty minutes of a billed GPU before
+  a local cluster showed the traceback. The integer settings now parse through `float`.
 * **Streaming partials carry no speaker.** Diarization is a whole-recording problem — the speaker of
   the first sentence is decided by how it compares with the last — so the speakers arrive once, with
   the score, in the `complete` event. Upstream attached a speaker to every interim result from a
