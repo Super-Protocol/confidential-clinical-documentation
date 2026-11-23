@@ -82,6 +82,12 @@ Measured end to end by `tests/measure.py` over four synthesised fixtures (`tests
 The dictation row is the one worth reading twice: it is the fixture upstream's configuration gets
 wrong, and `single-speaker` is the PASS. `tests/measure.py` fails if it ever reports two.
 
+On a real deployment of the listing that carries this fork (one H100 NVL cloud, the scribe on six
+CPU cores beside a generation engine holding the card), the same pipeline ran at **16–19 s of wall
+clock per minute of audio** for recognition and diarization together, and a SOAP note was generated
+from a five-minute consultation in **10–20 s**. The first request after a pod start is much slower —
+six to eight minutes for a five-minute recording — because the models load on first use.
+
 Synthesised speech is cleaner than a consulting room — no crosstalk, no overlap, no speakerphone,
 no accent the model has not heard. These figures are an upper bound and a wiring check, not a
 clinical validation; what a deployment relies on is the floors, not the figures.
