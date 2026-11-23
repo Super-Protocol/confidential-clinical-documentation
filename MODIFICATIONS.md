@@ -56,6 +56,19 @@ conversation that did not happen. Clustering on an embedding-distance threshold 
 **one** speaker on the same audio, and still exactly **two** on both two-speaker fixtures at every
 threshold from 0.4 to 0.7. The default is `0.5`.
 
+**One cluster is not a dictation, and saying so was this port's own fourth guess.** The first
+version of this fork sent a `single-speaker` verdict to the model as "Treat it as dictation by the
+clinician". A verdict of one cluster cannot distinguish a dictation from a two-person consultation
+the clusterer merged — and in the merged case every floor passes, because `meanSegmentPurity` is
+**1.0 by construction** when there is one speaker: the strongest check in `quality.py` is vacuous
+exactly where it was needed. So the patient's symptoms reached the model as the clinician's
+statements, through the one status that went around the gate instead of through it. Caught in review
+rather than by a test, which is the honest record of it. `single-speaker` is now handled exactly
+like `unreliable` — labels dropped, no roles, the model told the transcript is unattributed — and is
+reported separately only so a reader learns which of the two things happened. `tests/measure.py`
+and `tests/test_attribution.py` both hold that line now, and the latter fails against the old
+prompt.
+
 **It reports its own reliability.** New module `services/quality.py` scores every transcript —
 speakers found, the fraction of words that fell inside a speaker turn, per-sentence speaker purity,
 and how much of the recording was called speech — and compares them against floors the deployment

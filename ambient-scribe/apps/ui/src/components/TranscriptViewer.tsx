@@ -581,21 +581,21 @@ function DiarizationBanner({ diarization }: { diarization?: Transcript['diarizat
     )
   }
 
+  // Modified by Super Protocol, 2026, after the CTO's review: `single-speaker` was shown as a
+  // benign blue note reading "One voice in this recording", which a clinician reads as "this is
+  // a dictation". It cannot mean that — one cluster is either a dictation or a conversation
+  // whose speakers were not separated, and the deployment cannot tell which. Same colour, same
+  // warning and the same wording as the unreliable case; only the first line differs, and it
+  // says what was found rather than what it probably was.
   const single = status === 'single-speaker'
   return (
-    <div
-      className={`mx-4 mt-3 flex items-start gap-2 rounded-md border px-3 py-2 text-xs text-primary ${
-        single
-          ? 'border-accent-blue bg-accent-blue-subtle'
-          : 'border-accent-yellow bg-accent-yellow/10'
-      }`}
-    >
-      <AlertTriangle
-        className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${single ? 'text-accent-blue' : 'text-accent-yellow'}`}
-      />
+    <div className="mx-4 mt-3 flex items-start gap-2 rounded-md border border-accent-yellow bg-accent-yellow/10 px-3 py-2 text-xs text-primary">
+      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-accent-yellow" />
       <span>
         <strong>
-          {single ? 'One voice in this recording.' : 'Speakers were not reliably separated.'}
+          {single
+            ? 'One voice was detected — a dictation, or speakers that were not separated.'
+            : 'Speakers were not reliably separated.'}
         </strong>{' '}
         {reason || 'No speaker attribution is shown for this transcript.'} The note will be written
         from the clinical content without attributing anything to a speaker — read it with that in

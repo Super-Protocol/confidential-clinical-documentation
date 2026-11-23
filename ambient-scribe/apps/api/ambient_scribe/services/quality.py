@@ -22,7 +22,7 @@ than only on a test fixture.
 |---|---|---|
 | `speakersFound` | clusters the diarizer settled on | 1 on a two-person consultation is the headline failure; it is reported, not patched over |
 | `assignedWordFraction` | words that fell inside some speaker turn | low means the segmenter called most of the audio non-speech and the words it did place are a minority report |
-| `meanSegmentPurity` | per-sentence agreement with that sentence's majority speaker | a Whisper segment is a sentence, and a sentence has one speaker; a diarizer flipping mid-sentence scores low here even when the overall split looks plausible |
+| `meanSegmentPurity` | per-sentence agreement with that sentence's majority speaker | a Whisper segment is a sentence, and a sentence has one speaker; a diarizer flipping mid-sentence scores low here even when the overall split looks plausible. **It is 1.0 by construction when only one cluster was found**, so it is not evidence in that state — see `STATUS_SINGLE` |
 | `speechCoverage` | share of the recording called speech | near 0 means silence or a format problem; near 1 on a consultation with pauses means the segmenter is admitting noise |
 
 The floors are deployment configuration rather than constants, because a floor is
@@ -35,8 +35,13 @@ that is the tenant's judgement. The defaults are the measured ones — see
 * `ok` — labels and roles are shown and the note generation is told who spoke;
 * `unreliable` — a floor was missed. Labels are dropped, roles are not attempted,
   the note is generated from an unattributed transcript and says so;
-* `single-speaker` — one speaker found. Not an error: a dictation. Roles are not
-  attempted, and note generation is told the transcript is one voice;
+* `single-speaker` — one cluster found. **This is not the same as "a dictation"**, and the
+  first version of this module treated it as one. One cluster is either a dictation or a
+  conversation whose speakers were not separated, and nothing here can tell them apart: every
+  floor passes in the merged case and the purity score is 1.0 by construction. So this status
+  is handled exactly like `unreliable` — labels dropped, no roles, note generation told the
+  transcript is unattributed — and it is reported separately only so that a reader learns
+  WHICH of the two things happened to the separation;
 * `absent` — diarization did not run at all (no model, or it raised). The
   transcript is still produced; nothing is attributed;
 * `provided` — the transcript was imported already attributed, from a source the
@@ -129,8 +134,17 @@ def verdict(scores: dict, floors: dict) -> dict:
         out["reason"] = "; ".join(missed)
     elif scores["speakersFound"] <= 1:
         out["status"] = STATUS_SINGLE
-        out["reason"] = ("one voice was found in this recording, so nothing is attributed to a "
-                         "speaker and no clinician/patient roles are inferred")
+        # Modified by Super Protocol, 2026. The first version of this said "one voice was
+        # found", which reads as a dictation and was used as one. It cannot be: one cluster is
+        # either a dictation OR a conversation the clusterer merged, and nothing here can tell
+        # the two apart. Note also that `meanSegmentPurity` is 1.0 BY CONSTRUCTION in this
+        # state — with one speaker every sentence is perfectly pure — so the floor that catches
+        # a bad separation is vacuous exactly here, which is why this status attributes nothing
+        # rather than attributing to one person.
+        out["reason"] = ("one voice was detected: either a dictation, or a conversation whose "
+                         "speakers were not separated. This deployment cannot tell which, so "
+                         "nothing is attributed to a speaker and no clinician/patient roles "
+                         "are inferred")
     else:
         out["status"] = STATUS_OK
         out["reason"] = ""

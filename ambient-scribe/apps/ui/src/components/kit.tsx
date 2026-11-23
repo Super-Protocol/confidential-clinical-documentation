@@ -1,9 +1,10 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Super Protocol
  * SPDX-License-Identifier: Apache-2.0
  *
- * Added by Super Protocol, 2026: the four `@kui/react` components this
- * application used, rebuilt.
+ * This file is ours. It carries no upstream copyright line because none of it is
+ * upstream's code: it is the four `@kui/react` components this application used,
+ * rebuilt from their call sites.
  *
  * `@kui/react` is NVIDIA's Kaizen UI, vendored into this repository as a
  * tarball under the NVIDIA Kaizen UI License — "the distributable portions of

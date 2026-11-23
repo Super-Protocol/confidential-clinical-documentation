@@ -430,9 +430,28 @@ def format_transcript_with_speakers(transcript: Transcript) -> str:
         else:
             header.append(f"This transcript is speaker-separated and attributed: {named}.")
     elif status == "single-speaker":
+        # Modified by Super Protocol, 2026, after the CTO's review of the first version of this
+        # port — and the reason is worth reading, because the first version got this wrong in
+        # exactly the way the rest of the file exists to prevent.
+        #
+        # It said "Treat it as dictation by the clinician", and a verdict of one cluster CANNOT
+        # tell a dictation from a two-person consultation the clusterer merged into ONE cluster.
+        # In the merged case every floor passes — and `meanSegmentPurity` is 1.0 BY
+        # CONSTRUCTION, because with one speaker every sentence is perfectly pure — so the
+        # strongest check in `quality.py` is vacuous precisely where it was needed. The result
+        # was the patient's symptoms presented to the model as the clinician's statements, by a
+        # status that went around the gate rather than through it.
+        #
+        # So this branch now says what is actually known — one voice was found, and that is
+        # either a dictation or two voices that were not separated — and attributes nothing,
+        # which is the same instruction the unattributed branch gives. It never names a role.
         header.append(
-            "This recording contains ONE voice. Treat it as dictation by the clinician. "
-            "Do not attribute any statement to a patient and do not invent a second speaker.")
+            "ONE voice was detected in this recording. That means either a dictation by one "
+            "person OR a conversation whose speakers were not separated — this deployment "
+            "cannot tell which, so treat the transcript as UNATTRIBUTED. Write the note from "
+            "the clinical content only. Do NOT state or imply who said anything, do not infer "
+            "roles from the wording, and where a fact's source matters say that the source is "
+            "not identified in the recording.")
     else:
         reason = (transcript.diarization or {}).get("reason", "")
         header.append(

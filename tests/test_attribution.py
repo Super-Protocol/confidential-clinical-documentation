@@ -67,14 +67,74 @@ def test_unreliable_with_several_voices_reports_the_count_without_using_it():
     assert "not reliable enough to use" in out
 
 
-def test_single_speaker_is_dictation_and_invents_no_second_voice():
+def test_single_speaker_does_not_claim_a_dictation_and_attributes_nothing():
+    """One cluster is a dictation OR a conversation the clusterer merged. We cannot tell.
+
+    The first version of this port said "Treat it as dictation by the clinician", which put the
+    patient's symptoms in the clinician's mouth whenever a two-person consultation came back as
+    one cluster — and in that case every floor passes, because `meanSegmentPurity` is 1.0 by
+    construction with one speaker. It was a fourth guess in a port whose point was removing
+    three.
+    """
     out = format_transcript_with_speakers(transcript(
         [s("Patient attended for review of chest pain.", 0)],
         diarization={"status": "single-speaker", "speakersFound": 1,
-                     "reason": "one voice was found in this recording"}))
-    assert "ONE voice" in out
-    assert "do not invent a second speaker" in out
-    assert "Patient (" not in out
+                     "reason": "one voice was detected: either a dictation, or a conversation "
+                               "whose speakers were not separated"}))
+    assert "ONE voice was detected" in out
+    assert "cannot tell which" in out
+    assert "UNATTRIBUTED" in out
+    assert "Do NOT state or imply who said anything" in out
+    # the words the old version used, and the claim this test exists to forbid
+    assert "dictation by the clinician" not in out
+    assert "Treat it as dictation" not in out
+
+
+# Every status but `ok` and `provided`. A header that names a role in ANY of them is the defect
+# this whole module is about, so it is asked as one parametrised question rather than per case.
+ROLE_WORDS = ("clinician", "doctor", "physician", "patient", "provider", "nurse")
+
+
+@pytest.mark.parametrize("status,speakers", [
+    ("single-speaker", 1),
+    ("unreliable", 2),
+    ("unreliable", 1),
+    ("absent", 0),
+    ("something-a-later-version-added", 3),
+])
+@pytest.mark.parametrize("tags", [(0, 1), (None, None)],
+                         ids=["cluster-numbers-kept", "labels-dropped"])
+def test_an_unattributed_header_never_names_a_role(status, speakers, tags):
+    """No status but `ok` and `provided` may put a role in front of a line, or claim one.
+
+    Both label shapes are asked, because the pipeline drops the tags itself
+    (`quality.apply`) and a transcript that arrives with them anyway — written by an older
+    version, or by an operator — must still not be attributed. A NUMBERED speaker is fine: a
+    cluster index carries no role information and says so.
+    """
+    out = format_transcript_with_speakers(transcript(
+        [s("I have chest pain and shortness of breath.", tags[0]),
+         s("I will arrange an ECG and start you on aspirin.", tags[1], 10)],
+        diarization={"status": status, "speakersFound": speakers, "reason": "a stated reason"}))
+
+    lowered = out.lower()
+    for role in ROLE_WORDS:
+        # A role word may appear in the INSTRUCTION ("do not infer roles", "who said anything")
+        # and in the transcript's own words. What it may never be is a LABEL in front of a line,
+        # or a claim about whose voice this recording holds.
+        assert f"{role} (speaker" not in lowered, f"{role} labelled a line under {status}"
+        assert f"] {role}:" not in lowered, f"{role} labelled a line under {status}"
+    assert "dictation by the" not in lowered
+    assert "treat it as dictation" not in lowered
+
+    # What it says instead: a cluster number, or nothing at all.
+    if tags == (0, 1):
+        assert "Speaker 0:" in out and "Speaker 1:" in out
+    else:
+        assert "Unidentified speaker:" in out
+
+    # And the instruction is in every one of them, including a status no version has yet.
+    assert "Do NOT state or imply who said anything" in out
 
 
 def test_absent_diarization_is_treated_as_unattributed():
