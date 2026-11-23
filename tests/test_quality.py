@@ -141,3 +141,32 @@ def test_speech_coverage_floor(coverage_seconds, expect):
     scores["assignedWordFraction"] = 1.0
     scores["meanSegmentPurity"] = 1.0
     assert q.verdict(scores, FLOORS)["status"] == expect
+
+
+def test_a_merged_two_person_consultation_passes_every_floor_and_is_still_not_attributable():
+    """The case that made `single-speaker` dangerous, and the reason it attributes nothing.
+
+    Two people, both swallowed by ONE cluster. Assigned-word fraction 1.0, speech coverage 1.0,
+    and `meanSegmentPurity` 1.0 **by construction** — with one speaker every sentence is
+    perfectly pure, so the floor that catches a bad separation cannot fire here at all. Nothing
+    in the scores distinguishes this from a dictation, which is why the verdict says so instead
+    of guessing, and why `single-speaker` is not in `ATTRIBUTABLE`.
+    """
+    segments = [seg(0, ["I", "have", "chest", "pain"]),
+                seg(10, ["I", "will", "start", "aspirin"])]
+    turns = [Turn(0, 14, 0)]
+    assign_speakers([w for s in segments for w in s.words], turns)
+
+    result = q.verdict(q.score(segments, turns, 14.0), FLOORS)
+
+    # every floor clears, and the purity floor could not have fired
+    assert result["assignedWordFraction"] >= FLOORS["assignedWordFraction"]
+    assert result["meanSegmentPurity"] == 1.0
+    assert result["speechCoverage"] >= FLOORS["speechCoverage"]
+
+    assert result["status"] == q.STATUS_SINGLE
+    assert result["status"] not in q.ATTRIBUTABLE
+    assert "cannot tell which" in result["reason"]
+
+    q.apply(segments, result)
+    assert all(w.speaker is None for s in segments for w in s.words)
