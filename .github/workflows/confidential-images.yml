@@ -1,0 +1,86 @@
+# Builds the one image this fork publishes.
+#
+# Published to GitHub Container Registry so a marketplace listing can pin it by
+# digest and a confidential cluster space can pull it anonymously — no NGC
+# credential, no NVIDIA AI Enterprise entitlement, nothing for a tenant to hold.
+#
+# The image carries the model weights as well as the code: `models/fetch_models.py`
+# runs inside the build and fails it on a sha256 mismatch, so the digest below
+# covers what recognises the speech and what separates the speakers.
+name: confidential images
+
+on:
+  push:
+    branches:
+      - confidential/**
+    tags:
+      - confidential-v*
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  # The catalog's pin gate verifies every first-party digest it bundles against a
+  # GitHub build attestation (scripts/verify-pins). Without these two the image is
+  # published and unpinnable: digest -> attestation -> commit is the only direction
+  # that check runs in, and a tag agreeing with a digest proves nothing.
+  id-token: write
+  attestations: write
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Unit tests
+        working-directory: ambient-scribe/apps/api
+        run: |
+          uv sync --locked --extra dev
+          .venv/bin/python -m pytest ../../../tests -q
+
+  scribe-server:
+    runs-on: ubuntu-latest
+    needs: tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # An immutable tag, because a listing's `images:` digest is only a pin if
+      # the thing beside it cannot be rebuilt under the same name.
+      - name: Tag from the commit
+        id: tag
+        run: echo "tag=1.0.0-sp.$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/build-push-action@v6
+        id: build
+        with:
+          context: .
+          file: ambient-scribe/infra/docker/scribe.Dockerfile
+          push: true
+          provenance: false
+          tags: |
+            ghcr.io/super-protocol/confidential-clinical-documentation/scribe-server:${{ steps.tag.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Pushed to the registry as well as to the API: this repository is public, but
+      # the gate reads `--bundle-from-oci` first so that a private source repository
+      # does not need the reader's token to have access to its attestations.
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ghcr.io/super-protocol/confidential-clinical-documentation/scribe-server
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: The digest a listing pins
+        run: |
+          echo "ghcr.io/super-protocol/confidential-clinical-documentation/scribe-server:${{ steps.tag.outputs.tag }}"
+          echo "${{ steps.build.outputs.digest }}"

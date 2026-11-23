@@ -106,3 +106,7 @@ audio/
 # Temporary files
 *.tmp
 *.temp
+# Added by Super Protocol, 2026
+tests/fixtures/*.wav
+tests/fixtures/*.truth.json
+tests/fixtures/voices/

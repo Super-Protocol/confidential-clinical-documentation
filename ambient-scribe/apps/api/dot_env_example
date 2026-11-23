@@ -1,37 +1,78 @@
-# API Configuration
-DEBUG=true
+# SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Modified by Super Protocol, 2026: Riva, NGC and NVIDIA-hosted inference are
+# gone; the models are local and the generation endpoint is the deployment's own.
+
+# API
+DEBUG=false
 API_TITLE="Ambient Scribe API"
 API_VERSION="0.1.0"
+# Loopback. Nothing in this process authenticates anybody — the console in front
+# of it does — so binding it anywhere else publishes a consultation archive.
+API_HOST=127.0.0.1
+API_PORT=8000
+# Comma-separated origins allowed to call this API with credentials. Empty is
+# correct when the UI is served from this same process, which it is.
+CORS_ALLOW_ORIGINS=
 
-# NVIDIA API Keys
-NVIDIA_API_KEY=your_nvidia_api_key_here
-# For API Catalog https://integrate.api.nvidia.com/v1
-OPENAI_BASE_URL=http://llama-nim:8000/v1 
-LLM_MODEL=nvidia/llama-3.3-nemotron-super-49b-v1
+# Generation — any OpenAI-compatible endpoint. In a marketplace deployment this
+# is the open-weights model server on the card beside this pod.
+OPENAI_BASE_URL=http://swarm-model-server:8000/v1
+LLM_MODEL=
+LLM_API_KEY=
+LLM_TIMEOUT_SECONDS=600
+# Shown on the deployment's own pages so a reader knows what the weights are
+# licensed under, without going to look.
+LLM_LICENCE=
 
-# NVIDIA Riva ASR Configuration
-SELF_HOSTED=true
-RIVA_FUNCTION_ID=your_riva_hosted_function_id_here
-RIVA_URI=parakeet-nim:50051
-RIVA_MODEL=parakeet-1.1b-en-US-asr-streaming-silero-vad-sortformer
-RIVA_LANGUAGE=en-US
+# Speech recognition — faster-whisper, baked into the image. A DIRECTORY, never a
+# model name: a name would make the first transcription reach huggingface.co.
+ASR_MODEL_DIR=/models/asr
+ASR_COMPUTE_TYPE=int8
+ASR_THREADS=0
+ASR_BEAM_SIZE=1
+ASR_VAD_FILTER=true
+ASR_LANGUAGE=en
+
+# Speaker diarization — sherpa-onnx, also baked in.
 ENABLE_SPEAKER_DIARIZATION=true
+DIARIZATION_SEGMENTATION_MODEL=/models/diarization/segmentation.onnx
+DIARIZATION_EMBEDDING_MODEL=/models/diarization/embedding.onnx
+# An embedding-distance threshold, NOT a speaker count. See MODIFICATIONS.md §2:
+# asserting two speakers splits a dictated monologue into a conversation.
+DIARIZATION_THRESHOLD=0.5
+DIARIZATION_MIN_DURATION_ON=0.3
+DIARIZATION_MIN_DURATION_OFF=0.5
 
-# Streaming Configuration
+# The floors a diarization result clears before a speaker label is shown to
+# anybody or a role is inferred. Below any of them the labels are dropped and the
+# note is generated from an unattributed transcript.
+DIARIZATION_FLOOR_ASSIGNED_WORD_FRACTION=0.9
+DIARIZATION_FLOOR_SEGMENT_PURITY=0.85
+DIARIZATION_FLOOR_SPEECH_COVERAGE=0.3
+
+# Streaming: sentences reach the browser as the decoder finishes them. Speakers
+# arrive once, at the end, with the score — diarization is a whole-recording
+# problem.
 ENABLE_STREAMING=true
-STREAMING_CHUNK_SIZE=1600
 
-# Storage Configuration
+# Storage
 STORAGE_BACKEND=local
-UPLOAD_DIR=./uploads
-MAX_FILE_SIZE=104857600
+UPLOAD_DIR=/data/uploads
+STATE_DIR=/data/state
+MAX_FILE_SIZE=524288000
+# How long an uploaded recording is kept for playback. 0 deletes it as soon as the
+# transcript exists; a negative number keeps it indefinitely. The transcript's
+# text and timecodes are unaffected either way.
+AUDIO_RETENTION_HOURS=24
+RETENTION_SWEEP_SECONDS=900
 
 # Templates
-TEMPLATES_DIR=./templates
+TEMPLATES_DIR=/app/templates
 
 # Processing
-MAX_CONCURRENT_TRANSCRIPTIONS=3
-TRANSCRIPTION_TIMEOUT=300
+MAX_CONCURRENT_TRANSCRIPTIONS=1
+TRANSCRIPTION_TIMEOUT=3600
 
-# System Prompt Configuration
-SYSTEM_PROMPT="You are a medical professional creating clinical notes. Be concise and accurate."
+SYSTEM_PROMPT="You are documenting a clinical consultation from its transcript. Write only what the transcript supports. Where the transcript does not say something, say that it does not. This note is a draft for a clinician to read, correct and sign."

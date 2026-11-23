@@ -1,0 +1,138 @@
+[
+ [
+  "clinician",
+  "Good morning, Mrs Harper. I'm Doctor Ellis. Thanks for coming in. What's brought you to see me today?"
+ ],
+ [
+  "clinician",
+  "Tell me about the pain. Where exactly do you feel it?"
+ ],
+ [
+  "clinician",
+  "And when does it come on?"
+ ],
+ [
+  "clinician",
+  "How would you describe it? Sharp, dull, crushing?"
+ ],
+ [
+  "clinician",
+  "On a scale of one to ten, how bad does it get?"
+ ],
+ [
+  "clinician",
+  "Does anything else come with it? Breathlessness, sweating, nausea?"
+ ],
+ [
+  "clinician",
+  "Have you had any pain at rest, or anything that woke you at night?"
+ ],
+ [
+  "clinician",
+  "Any swelling in your ankles, or palpitations?"
+ ],
+ [
+  "clinician",
+  "Let's go through your background. Do you have any diagnosed conditions?"
+ ],
+ [
+  "clinician",
+  "What medication are you taking at the moment?"
+ ],
+ [
+  "clinician",
+  "Are you taking those every day?"
+ ],
+ [
+  "clinician",
+  "Any allergies to medicines?"
+ ],
+ [
+  "clinician",
+  "And do you smoke?"
+ ],
+ [
+  "clinician",
+  "Alcohol?"
+ ],
+ [
+  "clinician",
+  "Is there heart disease in the family?"
+ ],
+ [
+  "clinician",
+  "That's important, thank you. Let me examine you now. Can you sit forward for me?"
+ ],
+ [
+  "clinician",
+  "Your blood pressure is one hundred and fifty-two over ninety-four. Pulse is eighty-eight and regular."
+ ],
+ [
+  "clinician",
+  "Heart sounds are normal, no murmurs. Chest is clear. There's mild pitting oedema to both ankles."
+ ],
+ [
+  "clinician",
+  "Yes, and it's mild. Now, I want to be straightforward with you about what I think is going on."
+ ],
+ [
+  "clinician",
+  "The pattern you describe \u2014 pain on exertion that settles with rest, radiating to the jaw and arm \u2014 is typical of angina."
+ ],
+ [
+  "clinician",
+  "No. Angina is the heart muscle not getting enough blood when it's working hard. It's a warning, not a heart attack."
+ ],
+ [
+  "clinician",
+  "It's treatable, and the fact that you came in is the right thing. But I don't want to guess, so we'll investigate."
+ ],
+ [
+  "clinician",
+  "I'm going to arrange an ECG today, and bloods \u2014 full blood count, kidney function, lipids, and an HbA1c for the diabetes."
+ ],
+ [
+  "clinician",
+  "I'm also referring you to the rapid access chest pain clinic. They'll see you within two weeks."
+ ],
+ [
+  "clinician",
+  "I'm starting you on a glyceryl trinitrate spray. Two sprays under the tongue when the pain comes."
+ ],
+ [
+  "clinician",
+  "Sit down before you use it. If the pain is not gone fifteen minutes after a second dose, call an ambulance."
+ ],
+ [
+  "clinician",
+  "I'm also starting aspirin, seventy-five milligrams daily, and increasing your atorvastatin to eighty milligrams at night."
+ ],
+ [
+  "clinician",
+  "It can. Take it with food. If you get indigestion or any black stools, tell us straight away."
+ ],
+ [
+  "clinician",
+  "Don't stop being active, but don't push through pain. Walk on the flat, stop when it comes on, use the spray."
+ ],
+ [
+  "clinician",
+  "Lifting heavy bags is the part I'd avoid for now. Light duties until the clinic has seen you."
+ ],
+ [
+  "clinician",
+  "One more thing. Please take the statin every day, not most days. It matters more than almost anything else here."
+ ],
+ [
+  "clinician",
+  "Good. So: ECG and bloods today, chest pain clinic within two weeks, GTN spray as needed, aspirin and the higher statin."
+ ],
+ [
+  "clinician",
+  "And the red flag: pain at rest, or pain that doesn't go after two sprays and fifteen minutes, is a nine-nine-nine call."
+ ],
+ [
+  "clinician",
+  "You're welcome. The nurse will do the ECG now. I'll ring you with the blood results on Friday."
+ ]
+]

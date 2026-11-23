@@ -5,7 +5,8 @@
 
 import { useState, useRef, useEffect, useImperativeHandle, forwardRef } from 'react'
 import { Play, Pause, RotateCcw, Volume2, VolumeX } from 'lucide-react'
-import { Soundwaves } from '@nv-brand-assets/react-icons-inline'
+// Modified by Super Protocol, 2026: see the note in `src/app/App.tsx`.
+import { Waves as Soundwaves } from 'lucide-react'
 
 interface AudioPlayerProps {
   audioUrl: string | null

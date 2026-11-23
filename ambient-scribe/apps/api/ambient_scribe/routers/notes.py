@@ -1,5 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Modified by Super Protocol, 2026: notes are persisted, so a pod restart does
+# not discard what a clinician has drafted.
 
 """Notes generation router."""
 from datetime import datetime
@@ -12,13 +15,15 @@ import asyncio
 from ambient_scribe.models import NoteRequest, NoteResponse, SuggestionResponse, ErrorResponse
 from ambient_scribe.services.llm import generate_note_service
 from ambient_scribe.services.suggestions import get_autocomplete_suggestions
-from ambient_scribe.deps import get_settings
+from ambient_scribe.deps import get_settings, get_state_dir
 from ambient_scribe.routers.transcribe import _transcripts
+from ambient_scribe.utils.store import JsonStore
 
 router = APIRouter()
 
-# In-memory storage for demo
-_notes = {}
+# One JSON document per note on the deployment's own volume. See
+# `utils/store.py` for why, and `routers/transcribe.py` for the other half.
+_notes = JsonStore(get_state_dir() / "notes", NoteResponse)
 
 @router.get("/debug/transcripts")
 async def debug_transcripts():

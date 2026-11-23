@@ -1,0 +1,4 @@
+consult_*.wav
+dictation.wav
+*.truth.json
+voices/

@@ -1,32 +1,66 @@
 # SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Modified by Super Protocol, 2026: NVIDIA Riva replaced by local speech
+# recognition and local speaker diarization, and role detection made conditional
+# on a measured diarization result instead of unconditional.
 
-"""Automatic Speech Recognition service using NVIDIA Riva."""
-import io
-import os
-# Configure numba/librosa caching before importing librosa to avoid Docker issues
-# Don't disable JIT entirely as it breaks librosa, just fix the caching
-os.environ['NUMBA_CACHE_DIR'] = '/tmp/numba_cache'  # Set writable cache directory
-os.environ['NUMBA_DISABLE_CACHING'] = '1'  # Disable caching to avoid permission issues
+"""Automatic speech recognition and speaker attribution, on the deployment's own CPU.
 
-# Ensure cache directory exists and is writable
-import pathlib
-pathlib.Path('/tmp/numba_cache').mkdir(parents=True, exist_ok=True)
+Upstream this module is a Riva gRPC client: `offline_recognize` against a Parakeet
+NIM for the words, `add_speaker_diarization_to_config(config, True, 2)` for the
+speakers, and `detect_speaker_roles` to decide which speaker number is the
+clinician. The NIM needs an NGC credential and 75 GB of a card, and the whole
+blueprint asks for five of them.
 
-import librosa
-import soundfile as sf
-import riva.client
-import riva.client.proto.riva_asr_pb2 as rasr
-from pathlib import Path
-from typing import List, AsyncGenerator, Dict, Any
-import uuid
-from datetime import datetime
-from collections import Counter
+Here the words come from faster-whisper and the speakers from sherpa-onnx, both on
+the CPU and both reading checkpoints baked into the image — see
+`transcription.py` and `diarization.py`. The shape this module returns is
+unchanged: a `Transcript` of `TranscriptSegment`s carrying `speaker_tag`, which
+is what `format_transcript_with_speakers` and the UI already read.
+
+**What is NOT unchanged, and is the point of the port**: a speaker label is shown
+only when the diarization result passes the deployment's floors. `quality.py`
+scores every transcript, the score travels with it, and a transcript that did not
+pass arrives with no labels, no roles, and a stated reason. Upstream attributes
+unconditionally; a clinical note that puts the patient's symptoms in the
+clinician's mouth is fluent, well-formed and signed by a human who had no way to
+know.
+
+Riva's timestamp-repair helpers are gone with Riva. They existed because Riva
+returned word times that disagreed with one another (`fix_inconsistent_timestamps`,
+`regenerate_timestamps_from_text`, `add_estimated_timestamps`) and the repair had
+no input to work on here; Whisper's word timestamps are monotonic by construction.
+`mock_transcribe_audio_file` is gone too: a hard-coded doctor/patient exchange is
+not a thing to leave in an image that produces clinical documents.
+"""
+
+from __future__ import annotations
+
 import asyncio
-
-from ambient_scribe.models import Transcript, TranscriptSegment
-from ambient_scribe.deps import Settings
 import json
+import logging
+import os
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Any, AsyncGenerator, Dict, List
+
+import numpy as np
+
+from ambient_scribe.deps import Settings
+from ambient_scribe.models import Transcript, TranscriptSegment
+from ambient_scribe.services import diarization as diar
+from ambient_scribe.services.audio import decode
+from ambient_scribe.services import quality as quality_mod
+from ambient_scribe.services.transcription import SAMPLE_RATE, get_transcriber
+
+logger = logging.getLogger("ambient_scribe.asr")
+
+# One transcription at a time. CTranslate2 and onnxruntime are both internally
+# threaded over the whole CPU allocation, so a second concurrent job makes both
+# slower and makes the published throughput figure meaningless.
+_engine_lock = asyncio.Lock()
 
 
 def serialize_for_json(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -39,749 +73,337 @@ def serialize_for_json(data: Dict[str, Any]) -> Dict[str, Any]:
             serialized[key] = value
     return serialized
 
+
+def load_audio(file_path: Path) -> np.ndarray:
+    """Decode an uploaded recording to the 16 kHz mono the engines want.
+
+    Modified by Super Protocol, 2026. Upstream's `convert_to_wav` did this with
+    librosa, because Riva wanted LINEAR_PCM at 16 kHz over the wire. Nothing goes
+    over a wire now and `services/audio.py` decodes with PyAV, which
+    faster-whisper already carries — see that module for the 850 MB of image this
+    saves and the two traps in it.
+    """
+    return decode(file_path, SAMPLE_RATE)
+
+
+def _to_transcript_segments(segments) -> List[TranscriptSegment]:
+    out: List[TranscriptSegment] = []
+    for s in segments:
+        out.append(TranscriptSegment(
+            start=round(s.start, 3),
+            end=round(max(s.end, s.start), 3),
+            text=s.text,
+            speaker_tag=s.speaker,
+            confidence=round(s.confidence, 4),
+        ))
+    return out
+
+
+def _segment_speaker(segment) -> int | None:
+    """The segment's speaker is its words' majority, or None if no word has one."""
+    from collections import Counter
+
+    labelled = [w.speaker for w in segment.words if w.speaker is not None]
+    if not labelled:
+        return None
+    return Counter(labelled).most_common(1)[0][0]
+
+
 async def detect_speaker_roles(transcript: Transcript, settings: Settings) -> dict:
-    """Simple LLM call to detect which speaker ID is patient vs provider."""
+    """Ask the deployment's own model which speaker is the patient and which the clinician.
+
+    Modified by Super Protocol, 2026. Three changes, all of them about not guessing:
+
+    * it is called only when `quality.py` returned `ok`, so there are at least two
+      speakers and the attribution they rest on was measured;
+    * it refuses a reply it cannot parse, and a reply that does not name two
+      DISTINCT speakers that both appear in the transcript — upstream accepted
+      `{"patient": 1, "provider": 1}` and produced a transcript in which one
+      speaker was both people;
+    * upstream's "The speaker that is not the patient is most likely the doctor,
+      so be generous" is gone. Generosity is the failure mode.
+
+    An empty dict means "roles unknown", and every caller renders that as unknown
+    rather than filling it in.
+    """
     try:
         from openai import AsyncOpenAI
-        
-        # Prepare sample text from first few segments
-        sample_segments = []
-        for segment in transcript.segments[:10]:  # First 10 segments only
-            if segment.speaker_tag is not None:
-                sample_segments.append(f"Speaker {segment.speaker_tag}: {segment.text}")
-        
-        if not sample_segments:
+
+        present = sorted({s.speaker_tag for s in transcript.segments if s.speaker_tag is not None})
+        if len(present) < 2:
             return {}
 
-        sample_text = "\n".join(sample_segments)
-                
-        prompt = f"""Analyze this medical conversation and determine which speaker is the patient and which is the provider/doctor. The speaker that is not the patient is most likely the doctor, so be generous.
+        sample = [f"Speaker {s.speaker_tag}: {s.text}"
+                  for s in transcript.segments[:settings.role_detection_segments]
+                  if s.speaker_tag is not None]
+        if not sample:
+            return {}
 
-{sample_text}
-
-Return only a JSON object: {{"patient": speaker_number, "provider": speaker_number}}"""
-
-        client = AsyncOpenAI(
-            api_key=settings.nvidia_api_key,
-            base_url=settings.openai_base_url
+        prompt = (
+            "Below is an excerpt of a transcribed clinical consultation. Each line is "
+            "labelled with the speaker number the diarizer assigned.\n\n"
+            f"{chr(10).join(sample)}\n\n"
+            "Decide which speaker number is the patient and which is the clinician. "
+            "Answer with a single JSON object and nothing else: "
+            '{\"patient\": <speaker number>, \"clinician\": <speaker number>}. '
+            "If the excerpt does not make it clear which is which, answer "
+            '{\"patient\": null, \"clinician\": null} instead of choosing.'
         )
+
+        client = AsyncOpenAI(api_key=settings.llm_api_key or "not-used",
+                            base_url=settings.openai_base_url,
+                            timeout=settings.llm_timeout_seconds)
         response = await client.chat.completions.create(
             model=settings.llm_model,
             messages=[
-                {"role": "system", "content": "You are a medical transcript analyzer. Return only JSON."},
-                {"role": "user", "content": prompt}
+                {"role": "system",
+                 "content": "You label speakers in clinical transcripts. Answer with JSON only."},
+                {"role": "user", "content": prompt},
             ],
-            temperature=0.1,
-            max_tokens=50
+            temperature=0.0,
+            max_tokens=64,
         )
-        
-        result_text = response.choices[0].message.content.strip()
-        print(f"DEBUG: Speaker role detection result: {result_text}")
-        result_json = json.loads(result_text)
-        
-        # Convert to our format: {speaker_id: "patient"/"provider"}
-        speaker_roles = {}
-        if "patient" in result_json:
-            speaker_roles[result_json["patient"]] = "patient"
-        if "provider" in result_json:
-            speaker_roles[result_json["provider"]] = "provider"
-            
-        return speaker_roles
-        
-    except Exception as e:
-        print(f"Warning: Speaker role detection failed: {e}")
+        raw = (response.choices[0].message.content or "").strip()
+        # A model that wraps JSON in a fence is answering; a model that wrote prose is not.
+        if raw.startswith("```"):
+            raw = raw.strip("`")
+            raw = raw.split("\n", 1)[1] if "\n" in raw else raw
+        start, end = raw.find("{"), raw.rfind("}")
+        if start < 0 or end <= start:
+            logger.warning("role detection: no JSON object in the reply; roles left unknown")
+            return {}
+        parsed = json.loads(raw[start:end + 1])
+
+        patient = parsed.get("patient")
+        clinician = parsed.get("clinician", parsed.get("provider"))
+        if patient is None or clinician is None:
+            logger.info("role detection: the model declined to choose; roles left unknown")
+            return {}
+        try:
+            patient, clinician = int(patient), int(clinician)
+        except (TypeError, ValueError):
+            logger.warning("role detection: speaker numbers were not numbers; roles left unknown")
+            return {}
+        if patient == clinician or patient not in present or clinician not in present:
+            logger.warning("role detection: reply named %s/%s against speakers %s; "
+                           "roles left unknown", patient, clinician, present)
+            return {}
+
+        return {patient: "patient", clinician: "provider"}
+
+    except Exception as exc:  # noqa: BLE001 - a failed role detection is not a failed transcript
+        logger.warning("role detection failed, roles left unknown: %s", exc)
         return {}
+
+
+async def _run_engines(audio: np.ndarray, settings: Settings) -> tuple[list, list, dict]:
+    """Transcribe, diarize, attach speakers, and score. Blocking work off the event loop."""
+    transcriber = get_transcriber(settings)
+    diarizer = diar.get_diarizer(settings)
+    audio_seconds = len(audio) / SAMPLE_RATE
+
+    def work():
+        timings = {}
+        t0 = time.monotonic()
+        segments = list(transcriber.transcribe(audio, language=settings.asr_language))
+        timings["asrSeconds"] = round(time.monotonic() - t0, 2)
+
+        turns: list = []
+        if settings.enable_speaker_diarization and diarizer.available:
+            t0 = time.monotonic()
+            try:
+                turns = diarizer.diarize(audio)
+                timings["diarizationSeconds"] = round(time.monotonic() - t0, 2)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("diarization failed, transcript will carry no speakers: %s", exc)
+                turns = []
+                timings["diarizationSeconds"] = round(time.monotonic() - t0, 2)
+                timings["diarizationError"] = str(exc)
+        words = [w for s in segments for w in s.words]
+        if turns:
+            diar.assign_speakers(words, turns)
+            scores = quality_mod.score(segments, turns, audio_seconds)
+        else:
+            reason = ("speaker diarization is switched off for this deployment"
+                      if not settings.enable_speaker_diarization
+                      else "speaker diarization did not produce a result")
+            scores = {**quality_mod.score(segments, [], audio_seconds),
+                      "status": quality_mod.STATUS_ABSENT, "reason": reason}
+        result = quality_mod.verdict(scores, quality_mod.floors_from(settings))
+        quality_mod.apply(segments, result)
+        for s in segments:
+            s.speaker = _segment_speaker(s)
+        result["audioSeconds"] = round(audio_seconds, 2)
+        result.update(timings)
+        if timings.get("asrSeconds"):
+            result["secondsPerAudioMinute"] = round(
+                60.0 * (timings["asrSeconds"] + timings.get("diarizationSeconds", 0.0))
+                / max(audio_seconds, 0.001), 2)
+        return segments, turns, result
+
+    async with _engine_lock:
+        return await asyncio.to_thread(work)
+
 
 async def transcribe_audio_file(
     file_path: Path,
     transcript_id: str,
     filename: str,
-    settings: Settings
+    settings: Settings,
 ) -> Transcript:
-    """Transcribe an audio file using NVIDIA Riva ASR."""
-    
-    try:
-        # Convert audio to WAV format if needed
-        audio_data = convert_to_wav(file_path)
-        
-        # Set up Riva client
-        if settings.self_hosted:
-            print(f"Using self-hosted Riva URI: {settings.riva_uri}")
-            auth = riva.client.Auth(uri=settings.riva_uri)
-        else:
-            print(f"Using NVIDIA Riva URI: {settings.riva_uri}")
-            auth = riva.client.Auth(
-                uri=settings.riva_uri, 
-                use_ssl=True, 
-                metadata_args=[
-                    ["function-id", settings.riva_function_id],
-                    ["authorization", f"Bearer {settings.nvidia_api_key}"]
-                ]
-            )
-        
-        # Create ASR service with timeout options
-        asr_service = riva.client.ASRService(auth)
-        
-        # Configure recognition
-        config = riva.client.RecognitionConfig(
-            language_code=settings.riva_language,
-            max_alternatives=1,
-            enable_automatic_punctuation=True,
-            enable_word_time_offsets=True,
-            model=settings.riva_model
-        )
-        
-        # Set audio encoding parameters
-        enc_enum = rasr.RecognitionConfig.DESCRIPTOR.fields_by_name['encoding'].enum_type
-        config.encoding = enc_enum.values_by_name['LINEAR_PCM'].number
-        config.sample_rate_hertz = 16000
-        config.audio_channel_count = 1
-        
-        # Always enable speaker diarization to ensure UI can separate speakers
-        riva.client.add_speaker_diarization_to_config(config, True, 2) # 2 is just a hint, it is possible riva gives more
-        
-        # Get audio bytes
-        audio_data.seek(0)
-        audio_bytes = audio_data.read()
-        
-        if len(audio_bytes) == 0:
-            raise ValueError("Empty audio buffer")
-        
-        # Perform transcription
-        response = asr_service.offline_recognize(audio_bytes, config)
-        
-        # Convert response to our format
-        segments = process_riva_response(response)
-                
-        # Calculate total duration
-        duration = segments[-1].end if segments else 0.0
-        
-        # Create transcript
-        transcript = Transcript(
-            id=transcript_id,
-            segments=segments,
-            language=settings.riva_language,
-            duration=duration,
-            filename=filename,
-            created_at=datetime.now()
-        )
-                
-        # Detect speaker roles
+    """Transcribe an uploaded audio file and attribute its speakers."""
+    audio = load_audio(file_path)
+    segments, _turns, result = await _run_engines(audio, settings)
+    ts = _to_transcript_segments(segments)
+
+    transcript = Transcript(
+        id=transcript_id,
+        segments=ts,
+        language=settings.asr_language,
+        duration=round(len(audio) / SAMPLE_RATE, 3),
+        filename=filename,
+        created_at=datetime.now(),
+    )
+    transcript.diarization = result
+    logger.info("transcript %s: %s", transcript_id, json.dumps(result))
+
+    if result.get("status") in quality_mod.ATTRIBUTABLE:
         transcript.speaker_roles = await detect_speaker_roles(transcript, settings)
-        
-        print(f"DEBUG: Transcript speaker roles: {transcript.speaker_roles}")
-        
-        return transcript
-        
-    except Exception as e:
-        raise Exception(f"ASR transcription failed: {str(e)}")
+    else:
+        transcript.speaker_roles = {}
+    return transcript
+
 
 async def stream_transcribe_audio_file(
     file_path: Path,
     transcript_id: str,
     filename: str,
-    settings: Settings
+    settings: Settings,
 ) -> AsyncGenerator[dict, None]:
-    """Stream transcribe an audio file using NVIDIA Riva ASR with real-time updates."""
-    
+    """Yield each sentence as the decoder finishes it, then the attributed transcript.
+
+    Modified by Super Protocol, 2026. Upstream chunked a *file* into a Riva
+    streaming call to get interim results, and every interim result carried a
+    speaker tag from a diarizer that had only heard the audio so far. Diarization
+    is a whole-recording problem — the speaker of the first sentence is decided by
+    how it compares with the last — so partials here carry NO speaker, and the
+    speakers arrive once, in the `complete` event, with the score that says
+    whether to trust them.
+
+    Upstream also never called `detect_speaker_roles` on this path at all (the
+    line is commented out in its source), while `ENABLE_STREAMING` defaults to
+    true — so upstream's headline role attribution was off by default. It is on
+    here, on both paths, subject to the same floors.
+    """
     try:
-        # Check if streaming is enabled
         if not settings.enable_streaming:
-            # Fall back to regular transcription
-            print(f"Streaming is disabled, falling back to regular transcription")
             transcript = await transcribe_audio_file(file_path, transcript_id, filename, settings)
-            transcript_dict = serialize_for_json(transcript.dict())
-            
-            yield {
-                "type": "final",
-                "transcript": transcript_dict
-            }
+            yield {"type": "final", "transcript": serialize_for_json(transcript.dict())}
             return
 
-        # Set up Riva client
-        if settings.self_hosted:
-            print(f"Using self-hosted Riva URI for streaming: {settings.riva_uri}")
-            auth = riva.client.Auth(uri=settings.riva_uri)
-        else:
-            print(f"Using NVIDIA Riva URI for streaming: {settings.riva_uri}")
-            auth = riva.client.Auth(
-                uri=settings.riva_uri, 
-                use_ssl=True, 
-                metadata_args=[
-                    ["function-id", settings.riva_function_id],
-                    ["authorization", f"Bearer {settings.nvidia_api_key}"]
-                ]
-            )
-        asr_service = riva.client.ASRService(auth)
+        audio = load_audio(file_path)
+        audio_seconds = len(audio) / SAMPLE_RATE
+        yield {"type": "status", "transcript_id": transcript_id,
+               "message": f"Transcribing {audio_seconds / 60:.1f} minutes of audio"}
 
-        # Handle audio format - convert MP3 to WAV if needed
-        audio_file_to_use = str(file_path)
-        temp_wav_file = None
-        
-        if str(file_path).endswith('.mp3'):
-            print(f"Converting MP3 to WAV for streaming: {file_path}")
-            y, sr = librosa.load(str(file_path), sr=16000, mono=True)
-            wav_file = str(file_path).replace('.mp3', '_temp.wav')
-            sf.write(wav_file, y, sr)
-            audio_file_to_use = wav_file
-            temp_wav_file = wav_file
-            print(f"Temporary WAV file created: {wav_file}")
+        transcriber = get_transcriber(settings)
+        diarizer = diar.get_diarizer(settings)
 
-        # Configure streaming recognition
-        config = riva.client.StreamingRecognitionConfig(
-            config=riva.client.RecognitionConfig(
-                language_code=settings.riva_language,
-                max_alternatives=1,
-                enable_automatic_punctuation=True,
-                enable_word_time_offsets=True,
-                sample_rate_hertz=16000,
-                audio_channel_count=1,
-                model=settings.riva_model
-            ),
-            interim_results=True,
-        )
+        # The decoder is a blocking generator. Drain it on a worker thread and hand
+        # each segment to the event loop through a queue, so the sentences reach the
+        # browser while the rest of the recording is still being decoded.
+        queue: asyncio.Queue = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+        timings: dict = {}
 
-        # Enable speaker diarization
-        riva.client.add_speaker_diarization_to_config(config, True, 2)
+        def decode():
+            try:
+                t0 = time.monotonic()
+                for seg in transcriber.transcribe(audio, language=settings.asr_language):
+                    loop.call_soon_threadsafe(queue.put_nowait, ("segment", seg))
+                timings["asrSeconds"] = round(time.monotonic() - t0, 2)
+                loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
+            except Exception as exc:  # noqa: BLE001
+                loop.call_soon_threadsafe(queue.put_nowait, ("error", exc))
 
-        print(f"Starting streaming transcription of: {audio_file_to_use}")
-        
-        # Process streaming results
-        current_speaker = None
-        accumulated_text = ""
-        processed_finals = set()
-        segments = []
+        async with _engine_lock:
+            worker = asyncio.create_task(asyncio.to_thread(decode))
+            collected = []
+            while True:
+                kind, payload = await queue.get()
+                if kind == "error":
+                    raise payload
+                if kind == "done":
+                    break
+                collected.append(payload)
+                yield {
+                    "type": "final_segment",
+                    "segment": {"start": round(payload.start, 3),
+                                "end": round(max(payload.end, payload.start), 3),
+                                "text": payload.text,
+                                # No speaker yet, and that is deliberate — see the docstring.
+                                "speaker_tag": None,
+                                "confidence": round(payload.confidence, 4)},
+                    "speaker": "Speaker",
+                    "speaker_tag": None,
+                }
+            await worker
 
-        try:
-            with riva.client.AudioChunkFileIterator(
-                audio_file_to_use, settings.streaming_chunk_size
-            ) as audio_chunk_iterator:
-                
-                for response in asr_service.streaming_response_generator(
-                    audio_chunks=audio_chunk_iterator,
-                    streaming_config=config,
-                ):
-                    if not response.results:
-                        continue
-                    
-                    for result in response.results:
-                        if not result.alternatives:
-                            continue
-                            
-                        alternative = result.alternatives[0]
-                        transcript = alternative.transcript.strip()
-                        
-                        if not transcript:
-                            continue
-                        
-                        # Get speaker info
-                        speaker = "Speaker"
-                        if hasattr(alternative, 'words') and alternative.words:
-                            speaker_tags = []
-                            for word in alternative.words:
-                                if hasattr(word, 'speaker_tag'):
-                                    speaker_tags.append(word.speaker_tag)
-                            
-                            if speaker_tags:
-                                most_common_speaker = Counter(speaker_tags).most_common(1)[0][0]
-                                speaker = f"Speaker {most_common_speaker}"
-                        
-                        if result.is_final:
-                            # Create a unique key for this final result
-                            result_key = f"{speaker}:{transcript}"
-                            
-                            # Skip if we've already processed this exact final result
-                            if result_key in processed_finals:
-                                continue
-                                
-                            processed_finals.add(result_key)
-                            
-                            # Create transcript segment for final result
-                            start_time = 0.0
-                            end_time = 0.0
-                            confidence = 0.95
-                            
-                            if hasattr(alternative, 'words') and alternative.words:
-                                words = alternative.words
-                                if words:
-                                    try:
-                                        start_time = extract_time(words[0].start_time)
-                                        end_time = extract_time(words[-1].end_time)
-                                        confidences = [getattr(word, 'confidence', 1.0) for word in words if getattr(word, 'confidence', None) is not None]
-                                        confidence = sum(confidences) / len(confidences) if confidences else 0.95
-                                    except:
-                                        pass
-                            
-                            # Extract speaker number
-                            speaker_tag = 0
-                            try:
-                                if speaker.startswith("Speaker "):
-                                    speaker_tag = int(speaker.split(" ")[1])
-                            except:
-                                speaker_tag = 0
-                            
-                            segment = TranscriptSegment(
-                                start=start_time,
-                                end=max(end_time, start_time),
-                                text=transcript,
-                                speaker_tag=speaker_tag,
-                                confidence=confidence
-                            )
-                            segments.append(segment)
-                                                        
-                            # Yield final segment
-                            yield {
-                                "type": "final_segment",
-                                "segment": segment.dict(),
-                                "speaker": speaker,
-                                "speaker_tag": speaker_tag
-                            }
-                            
-                        else:
-                            # Yield partial result
-                            yield {
-                                "type": "partial",
-                                "text": transcript,
-                                "speaker": speaker,
-                            }
-                            
-                        # Small delay to prevent overwhelming the client
-                        await asyncio.sleep(0.01)
+            yield {"type": "status", "transcript_id": transcript_id,
+                   "message": "Identifying who spoke"}
 
-        finally:
-            # Clean up temporary WAV file if we created one
-            if temp_wav_file and Path(temp_wav_file).exists():
-                Path(temp_wav_file).unlink()
-                print(f"Cleaned up temporary file: {temp_wav_file}")
-
-        # Create final transcript object
-        duration = segments[-1].end if segments else 0.0
-        
-        transcript_obj = Transcript(
-            id=transcript_id,
-            segments=segments,
-            language=settings.riva_language,
-            duration=duration,
-            filename=filename,
-            created_at=datetime.now()
-        )
-        
-        # Detect speaker roles
-        # transcript_obj.speaker_roles = await detect_speaker_roles(transcript_obj, settings)
-        
-        # Yield complete transcript
-        transcript_dict = serialize_for_json(transcript_obj.dict())
-        
-        yield {
-            "type": "complete",
-            "transcript": transcript_dict
-        }
-        
-        print("Streaming transcription completed.")
-        
-    except Exception as e:
-        yield {
-            "type": "error",
-            "error": f"Streaming transcription failed: {str(e)}"
-        }
-        raise Exception(f"Streaming ASR transcription failed: {str(e)}")
-
-def extract_time(time_obj) -> float:
-    """Extract time from Riva time object."""
-    try:
-        if hasattr(time_obj, 'seconds') and hasattr(time_obj, 'nanos'):
-            seconds = getattr(time_obj, 'seconds', None)
-            nanos = getattr(time_obj, 'nanos', None)
-            if seconds is not None and nanos is not None:
-                return max(0.0, seconds + nanos / 1e9)
-        
-        if isinstance(time_obj, (int, float)):
-            return max(0.0, float(time_obj))
-        
-        if hasattr(time_obj, 'total_seconds'):
-            return max(0.0, time_obj.total_seconds())
-            
-    except Exception:
-        pass
-    
-    return 0.0
-
-def convert_to_wav(file_path: Path) -> io.BytesIO:
-    """Convert audio file to WAV format suitable for Riva."""
-    
-    try:
-        # Load audio with librosa (supports many formats)
-        y, sr = librosa.load(str(file_path), sr=None)
-        
-        # Resample to 16kHz if needed
-        if sr != 16000:
-            y = librosa.resample(y, orig_sr=sr, target_sr=16000)
-            sr = 16000
-        
-        # Convert to mono if stereo
-        if len(y.shape) > 1:
-            y = librosa.to_mono(y)
-        
-        # Write to buffer
-        wav_buffer = io.BytesIO()
-        sf.write(wav_buffer, y, sr, format='wav')
-        wav_buffer.seek(0)
-        
-        return wav_buffer
-        
-    except Exception as e:
-        raise Exception(f"Audio conversion failed: {str(e)}")
-
-def process_riva_response(response) -> List[TranscriptSegment]:
-    """Process Riva ASR response into transcript segments."""
-    
-    print(f"DEBUG: Riva response: {response}")
-    
-    segments = []
-    
-    # Group words by consecutive speaker tag
-    word_groups = []
-    current_speaker = None
-    current_words = []
-
-    try:
-        for result in response.results:
-            # If words list is missing, skip grouping for this result
-            words_list = getattr(result.alternatives[0], 'words', []) or []
-            
-            # First pass: collect all words and infer missing speaker tags
-            processed_words = []
-            last_known_speaker = None
-            
-            for word in words_list:
-                # Check if word has explicit speaker_tag
-                if hasattr(word, 'speaker_tag') and word.speaker_tag is not None:
-                    speaker = word.speaker_tag
-                    last_known_speaker = speaker
-                else:
-                    # Word doesn't have speaker_tag, use last known speaker or default to 1
-                    speaker = last_known_speaker if last_known_speaker is not None else 1
-                    print(f"DEBUG: Word '{getattr(word, 'word', '')}' missing speaker_tag, assigned to speaker {speaker}")
-                
-                processed_words.append((word, speaker))
-            
-            # Second pass: group by consecutive speaker
-            for word, speaker in processed_words:
-                if speaker != current_speaker:
-                    if current_words:
-                        word_groups.append((current_speaker, current_words))
-                    current_speaker = speaker
-                    current_words = [word]
-                else:
-                    current_words.append(word)
-
-        if current_words:
-            word_groups.append((current_speaker, current_words))
-
-        # Convert word groups to segments, tolerating missing timestamps
-        for speaker, words in word_groups:
-            if not words:
-                continue
-
-            def safe_time(get_time_attr):
-                try:
-                    t = get_time_attr()
-                    print(f"DEBUG: Time object: {t}, type: {type(t)}")
-                    
-                    # Try different ways to extract time
-                    if hasattr(t, 'seconds') and hasattr(t, 'nanos'):
-                        seconds = getattr(t, 'seconds', None)
-                        nanos = getattr(t, 'nanos', None)
-                        if seconds is not None and nanos is not None:
-                            time_val = seconds + nanos / 1e9
-                            print(f"DEBUG: Extracted time from seconds/nanos: {time_val}s")
-                            
-                            # Validate the timestamp - should be reasonable for a conversation (< 1 hour typically)
-                            if time_val > 3600:  # More than 1 hour
-                                print(f"DEBUG: Timestamp too large ({time_val}s), might be in wrong units")
-                                
-                                # Try different conversion factors
-                                candidates = [
-                                    (1000, 'milliseconds'),
-                                    (1000000, 'microseconds'),
-                                    (1000000000, 'nanoseconds'),
-                                    (60, 'minutes')  # Sometimes Riva returns minutes instead of seconds
-                                ]
-                                
-                                for factor, name in candidates:
-                                    converted = time_val / factor
-                                    if 0 <= converted <= 3600:  # Reasonable range: 0 to 1 hour
-                                        time_val = converted
-                                        print(f"DEBUG: Converted from {name}: {time_val}s")
-                                        break
-                                
-                                # If still unreasonable, return 0 to trigger estimation
-                                if time_val > 3600:
-                                    print(f"DEBUG: Could not convert large timestamp, returning 0")
-                                    return 0.0
-                            
-                            return max(0.0, time_val)
-                    
-                    # Try if it's already a float/int
-                    if isinstance(t, (int, float)):
-                        time_val = float(t)
-                        print(f"DEBUG: Direct numeric time: {time_val}s")
-                        
-                        # Apply the same validation
-                        if time_val > 3600:
-                            print(f"DEBUG: Direct timestamp too large ({time_val}s), trying conversions")
-                            
-                            # Try different conversion factors
-                            candidates = [
-                                (1000, 'milliseconds'),
-                                (1000000, 'microseconds'),
-                                (1000000000, 'nanoseconds'),
-                                (60, 'minutes')
-                            ]
-                            
-                            for factor, name in candidates:
-                                converted = time_val / factor
-                                if 0 <= converted <= 3600:
-                                    time_val = converted
-                                    print(f"DEBUG: Converted from {name}: {time_val}s")
-                                    break
-                            
-                            if time_val > 3600:
-                                return 0.0
-                        
-                        return max(0.0, time_val)
-                    
-                    # Try if it has a total_seconds method
-                    if hasattr(t, 'total_seconds'):
-                        time_val = t.total_seconds()
-                        print(f"DEBUG: total_seconds(): {time_val}s")
-                        return max(0.0, time_val)
-                        
-                    print(f"DEBUG: No valid time extraction method found for: {t}")
-                except Exception as e:
-                    print(f"DEBUG: Exception in safe_time: {e}")
-                    
-                return 0.0
-
-            start_time = safe_time(lambda: words[0].start_time)
-            end_time = safe_time(lambda: words[-1].end_time)
-            text = ' '.join([getattr(word, 'word', '') for word in words]).strip()
-
-            confidences = [getattr(word, 'confidence', 1.0) for word in words if getattr(word, 'confidence', None) is not None]
-            avg_confidence = sum(confidences) / len(confidences) if confidences else 1.0
-
-            segments.append(TranscriptSegment(
-                start=start_time,
-                end=max(end_time, start_time),
-                text=text,
-                speaker_tag=speaker if speaker is not None else 0,
-                confidence=avg_confidence
-            ))
-    except Exception:
-        pass
-
-    # If we still have no segments, try to parse from transcript text that includes labels like 'speaker_1: '
-    if not segments:
-        full_text = " ".join([
-            getattr(result.alternatives[0], 'transcript', '')
-            for result in getattr(response, 'results', [])
-        ]).strip()
-        if full_text:
-            import re
-            pattern = re.compile(r"(?:^|\n)\s*(speaker[_\s-]?(\d+))\s*:\s*", re.IGNORECASE)
-            parts = pattern.split(full_text)
-            # parts will be like [pre, 'speaker_1', '1', text1, 'speaker_2', '2', text2, ...]
-            if len(parts) > 1:
-                it = iter(parts)
-                preface = next(it, '')  # text before first label
-                # If there is preface text, keep as unlabeled first segment
-                if preface.strip():
-                    segments.append(TranscriptSegment(start=0.0, end=0.0, text=preface.strip(), speaker_tag=0, confidence=1.0))
-                while True:
+            def attribute():
+                turns: list = []
+                if settings.enable_speaker_diarization and diarizer.available:
+                    t0 = time.monotonic()
                     try:
-                        _label = next(it)
-                        speaker_num_str = next(it)
-                        body = next(it)
-                        speaker_num = int(speaker_num_str) if speaker_num_str and speaker_num_str.isdigit() else 0
-                        if body.strip():
-                            segments.append(TranscriptSegment(start=0.0, end=0.0, text=body.strip(), speaker_tag=speaker_num, confidence=1.0))
-                    except StopIteration:
-                        break
-            else:
-                # Final fallback: single segment
-                segments.append(TranscriptSegment(start=0.0, end=0.0, text=full_text, speaker_tag=0, confidence=1.0))
-    
-    # Post-process to add estimated timestamps if all are 0
-    segments = add_estimated_timestamps(segments)
-    
-    # Post-process to fix inconsistent timestamps
-    segments = fix_inconsistent_timestamps(segments)
-    
-    return segments
+                        turns = diarizer.diarize(audio)
+                        timings["diarizationSeconds"] = round(time.monotonic() - t0, 2)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.error("diarization failed: %s", exc)
+                        timings["diarizationSeconds"] = round(time.monotonic() - t0, 2)
+                        timings["diarizationError"] = str(exc)
+                words = [w for s in collected for w in s.words]
+                if turns:
+                    diar.assign_speakers(words, turns)
+                    scores = quality_mod.score(collected, turns, audio_seconds)
+                else:
+                    reason = ("speaker diarization is switched off for this deployment"
+                              if not settings.enable_speaker_diarization
+                              else "speaker diarization did not produce a result")
+                    scores = {**quality_mod.score(collected, [], audio_seconds),
+                              "status": quality_mod.STATUS_ABSENT, "reason": reason}
+                res = quality_mod.verdict(scores, quality_mod.floors_from(settings))
+                quality_mod.apply(collected, res)
+                for s in collected:
+                    s.speaker = _segment_speaker(s)
+                res["audioSeconds"] = round(audio_seconds, 2)
+                res.update(timings)
+                res["secondsPerAudioMinute"] = round(
+                    60.0 * (timings.get("asrSeconds", 0.0) + timings.get("diarizationSeconds", 0.0))
+                    / max(audio_seconds, 0.001), 2)
+                return res
 
+            result = await asyncio.to_thread(attribute)
 
-def fix_inconsistent_timestamps(segments: List[TranscriptSegment]) -> List[TranscriptSegment]:
-    """Fix timestamps that are inconsistent or out of sequence."""
-    
-    if len(segments) < 2:
-        return segments
-    
-    print("DEBUG: Checking for inconsistent timestamps")
-    
-    # Look for patterns that suggest wrong units or inconsistent timing
-    issues_found = []
-    
-    for i in range(1, len(segments)):
-        prev_segment = segments[i-1]
-        curr_segment = segments[i]
-        
-        # Check for time going backwards (should always increase)
-        if curr_segment.start < prev_segment.start:
-            issues_found.append(f"Time goes backwards: {prev_segment.start:.1f}s -> {curr_segment.start:.1f}s")
-        
-        # Check for unreasonably large jumps (> 30 minutes between segments)
-        time_gap = curr_segment.start - prev_segment.start
-        if time_gap > 1800:  # 30 minutes
-            issues_found.append(f"Large time gap: {time_gap:.1f}s between segments {i-1} and {i}")
-        
-        # Check for segments that are very long (> 5 minutes)
-        duration = curr_segment.end - curr_segment.start
-        if duration > 300:  # 5 minutes
-            issues_found.append(f"Very long segment: {duration:.1f}s for segment {i}")
-    
-    if issues_found:
-        print(f"DEBUG: Found {len(issues_found)} timestamp issues:")
-        for issue in issues_found:
-            print(f"  - {issue}")
-        
-        # If we have major issues, regenerate all timestamps based on text length
-        print("DEBUG: Regenerating all timestamps based on text length")
-        return regenerate_timestamps_from_text(segments)
-    
-    return segments
-
-
-def regenerate_timestamps_from_text(segments: List[TranscriptSegment]) -> List[TranscriptSegment]:
-    """Regenerate timestamps based on text length and speaking rate."""
-    
-    print("DEBUG: Regenerating timestamps from text analysis")
-    
-    # Average speaking rate: ~150 words per minute = 2.5 words per second
-    words_per_second = 2.5
-    
-    current_time = 0.0
-    new_segments = []
-    
-    for i, segment in enumerate(segments):
-        word_count = len(segment.text.split())
-        duration = max(1.0, word_count / words_per_second)  # Minimum 1 second per segment
-        
-        new_segment = TranscriptSegment(
-            start=current_time,
-            end=current_time + duration,
-            text=segment.text,
-            speaker_tag=segment.speaker_tag,
-            confidence=segment.confidence
+        transcript = Transcript(
+            id=transcript_id,
+            segments=_to_transcript_segments(collected),
+            language=settings.asr_language,
+            duration=round(audio_seconds, 3),
+            filename=filename,
+            created_at=datetime.now(),
         )
-        
-        new_segments.append(new_segment)
-        current_time += duration + 0.5  # Add 0.5 second pause between segments
-        
-        print(f"DEBUG: Regenerated segment {i}: {new_segment.start:.1f}s - {new_segment.end:.1f}s")
-    
-    return new_segments
+        transcript.diarization = result
+        logger.info("transcript %s: %s", transcript_id, json.dumps(result))
 
+        if result.get("status") in quality_mod.ATTRIBUTABLE:
+            transcript.speaker_roles = await detect_speaker_roles(transcript, settings)
+        else:
+            transcript.speaker_roles = {}
 
-def add_estimated_timestamps(segments: List[TranscriptSegment]) -> List[TranscriptSegment]:
-    """Add estimated timestamps to segments that have 0 timestamps."""
-    
-    if not segments:
-        return segments
-    
-    # Check if all segments have 0 timestamps
-    all_zero = all(seg.start == 0.0 and seg.end == 0.0 for seg in segments)
-    
-    if all_zero:
-        print("DEBUG: All timestamps are 0, adding estimated timestamps")
-        
-        # Estimate based on text length and average speaking rate
-        # Average speaking rate: ~150 words per minute = 2.5 words per second
-        words_per_second = 2.5
-        
-        current_time = 0.0
-        for i, segment in enumerate(segments):
-            word_count = len(segment.text.split())
-            duration = max(1.0, word_count / words_per_second)  # Minimum 1 second per segment
-            
-            segments[i] = TranscriptSegment(
-                start=current_time,
-                end=current_time + duration,
-                text=segment.text,
-                speaker_tag=segment.speaker_tag,
-                confidence=segment.confidence
-            )
-            
-            current_time += duration + 0.5  # Add 0.5 second pause between segments
-            print(f"DEBUG: Estimated segment {i}: {segments[i].start:.1f}s - {segments[i].end:.1f}s")
-    
-    return segments
+        yield {"type": "complete", "transcript": serialize_for_json(transcript.dict())}
 
-# Mock transcription function for testing without Riva
-async def mock_transcribe_audio_file(
-    file_path: Path,
-    transcript_id: str,
-    filename: str,
-    settings: Settings
-) -> Transcript:
-    """Mock transcription for testing purposes."""
-    
-    # Simulate processing time
-    import asyncio
-    await asyncio.sleep(2)
-    
-    # Create mock transcript segments
-    segments = [
-        TranscriptSegment(
-            start=0.0,
-            end=15.0,
-            text="Good morning, how are you feeling today?",
-            speaker_tag=1,  # Doctor
-            confidence=0.95
-        ),
-        TranscriptSegment(
-            start=15.5,
-            end=32.0,
-            text="I've been having some chest pain and shortness of breath for the past few days.",
-            speaker_tag=2,  # Patient
-            confidence=0.92
-        ),
-        TranscriptSegment(
-            start=33.0,
-            end=48.0,
-            text="Can you describe the chest pain? Is it sharp, dull, or crushing?",
-            speaker_tag=1,  # Doctor
-            confidence=0.97
-        ),
-        TranscriptSegment(
-            start=49.0,
-            end=65.0,
-            text="It's more of a dull ache, and it gets worse when I walk up stairs.",
-            speaker_tag=2,  # Patient
-            confidence=0.94
-        )
-    ]
-    
-    # Create transcript
-    transcript = Transcript(
-        id=transcript_id,
-        segments=segments,
-        language="en-US",
-        duration=65.0,
-        filename=filename,
-        created_at=datetime.now()
-    )
-    
-    # Detect speaker roles
-    transcript.speaker_roles = await detect_speaker_roles(transcript, settings)
-    
-    return transcript
+    except Exception as exc:  # noqa: BLE001
+        logger.error("transcription failed: %s", exc, exc_info=True)
+        yield {"type": "error", "error": f"Transcription failed: {exc}"}

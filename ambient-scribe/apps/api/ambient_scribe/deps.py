@@ -1,5 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Modified by Super Protocol, 2026: Riva and NVIDIA-hosted-inference settings
+# replaced by local ASR and diarization settings, persistence and retention
+# added, and the diarization floors made deployment configuration.
 
 """FastAPI dependencies and dependency injection."""
 from functools import lru_cache
@@ -20,18 +24,57 @@ class Settings(BaseSettings):
     api_title: str = "Ambient Scribe API"
     api_version: str = "0.1.0"
     
-    # NVIDIA API
-    self_hosted: bool = True
-    riva_function_id: str = ""
-    nvidia_api_key: str = ""
-    openai_base_url: str = "http://llama-nim:8000/v1"  # Default to self-hosted LLM NIM "https://integrate.api.nvidia.com/v1"
-    llm_model: str = "nvidia/llama-3.3-nemotron-super-49b-v1"
-    
-    # Riva ASR Configuration
-    riva_uri: str = "parakeet-nim:50051"
-    riva_model: str = "parakeet-1.1b-en-US-asr-offline-silero-vad-sortformer"
-    riva_language: str = "en-US"
+    # ---------------------------------------------------------------------
+    # Generation. An OpenAI-compatible endpoint inside this cluster space; the
+    # NVIDIA-hosted branch and its API key are gone, because reaching
+    # integrate.api.nvidia.com with a consultation is the one thing a tenant
+    # deploys this to avoid.
+    # ---------------------------------------------------------------------
+    openai_base_url: str = "http://swarm-model-server:8000/v1"
+    llm_model: str = ""
+    # The endpoint is cluster-internal and on no public address, but an
+    # unauthenticated inference endpoint is an unauthenticated inference
+    # endpoint; the client carries a key regardless.
+    llm_api_key: str = ""
+    llm_timeout_seconds: float = 600.0
+    llm_licence: str = ""
+    # How many transcript segments the role-detection prompt sees. Upstream used
+    # ten; a consultation can open with pleasantries that name nobody.
+    role_detection_segments: int = 24
+
+    # ---------------------------------------------------------------------
+    # Speech recognition — faster-whisper on the CPU, from a checkpoint baked
+    # into the image. `asr_model_dir` is a directory and never a model name:
+    # a name would make the first transcription of a fresh deployment reach
+    # huggingface.co, and this deployment reaches nothing.
+    # ---------------------------------------------------------------------
+    asr_model_dir: str = "/models/asr"
+    asr_compute_type: str = "int8"
+    asr_threads: int = 0  # 0 = every core the container was given
+    asr_beam_size: int = 1
+    asr_vad_filter: bool = True
+    asr_language: str = "en"
+
+    # ---------------------------------------------------------------------
+    # Speaker diarization — sherpa-onnx over pyannote segmentation (MIT) and
+    # NeMo TitaNet-Large embeddings (CC-BY-4.0), also baked in.
+    # ---------------------------------------------------------------------
     enable_speaker_diarization: bool = True
+    diarization_segmentation_model: str = "/models/diarization/segmentation.onnx"
+    diarization_embedding_model: str = "/models/diarization/embedding.onnx"
+    # An embedding-distance threshold, NOT a speaker count. Upstream asserts two
+    # speakers; measured on a dictated monologue, asserting two splits the one
+    # voice into two clusters and invents a conversation. See MODIFICATIONS.md.
+    diarization_threshold: float = 0.5
+    diarization_min_duration_on: float = 0.3
+    diarization_min_duration_off: float = 0.5
+
+    # The floors a diarization result has to clear before a speaker label is
+    # shown to anybody or a role is inferred. Below any of them the labels are
+    # dropped and the note is generated from an unattributed transcript.
+    diarization_floor_assigned_word_fraction: float = 0.9
+    diarization_floor_segment_purity: float = 0.85
+    diarization_floor_speech_coverage: float = 0.3
     
     # Streaming Configuration
     enable_streaming: bool = True
@@ -41,6 +84,16 @@ class Settings(BaseSettings):
     storage_backend: str = "local"  # "local"
     upload_dir: str = "./uploads"
     max_file_size: int = 100 * 1024 * 1024  # 100MB
+    # Added by Super Protocol, 2026. Upstream keeps transcripts and notes in two
+    # module-level dicts, so a restart loses every note a clinician drafted while
+    # the recording — the most sensitive artefact in the system — is the only
+    # thing that survives. That is the wrong way round. Both are written here.
+    state_dir: str = "./state"
+    # How long an uploaded recording is kept for playback, after which it is
+    # deleted and the transcript keeps its text and its timecodes. 0 = delete as
+    # soon as the transcript exists; a negative number = keep indefinitely.
+    audio_retention_hours: float = 24.0
+    retention_sweep_seconds: float = 900.0
     
     # Templates
     templates_dir: str = "./templates"
@@ -49,10 +102,19 @@ class Settings(BaseSettings):
     max_concurrent_transcriptions: int = 3
     transcription_timeout: int = 300  # 5 minutes
     
-    # Guardrails Configuration
-    enable_guardrails: bool = False
-    guardrails_config_path: str = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config")
-    guardrails_log_level: str = "INFO"
+    # Which origins may call this API with credentials. Upstream sends
+    # `allow_origins=["*"]` with `allow_credentials=True`; the console in front of
+    # this API carries a session cookie, so a wildcard there is a cross-site
+    # request away from somebody else's page reading a consultation.
+    cors_allow_origins: str = ""
+
+    # NeMo Guardrails is gone, and so is the switch. Upstream wires
+    # `nemoguardrails` to the `nvidia_ai_endpoints` engine and gates it on
+    # `enable_guardrails`, which defaults to false — and ships NO rails
+    # configuration at all, so the directory it would load from does not exist in
+    # the repository. A switch that cannot be turned on, in front of a safety
+    # claim nobody can test, is worse than its absence: see MODIFICATIONS.md.
+    # This deployment serves no content-safety model and the listing says so.
     
     # System Prompt Configuration
     system_prompt: str = "You are a medical professional creating clinical notes. Be concise and accurate."
@@ -71,9 +133,11 @@ def _load_settings() -> Settings:
     
     # Optional: Print what values were loaded (for debugging)
     print("Settings loaded:")
-    print(f"  nvidia_api_key: {'***' if settings.nvidia_api_key else 'NOT SET'}")
     print(f"  debug: {settings.debug}")
-    print(f"  riva_uri: {settings.riva_uri}")
+    print(f"  asr_model_dir: {settings.asr_model_dir} ({settings.asr_compute_type})")
+    print(f"  diarization: {'on' if settings.enable_speaker_diarization else 'off'} "
+          f"threshold={settings.diarization_threshold}")
+    print(f"  openai_base_url: {settings.openai_base_url} model={settings.llm_model}")
     print(f"  enable_streaming: {settings.enable_streaming}")
     
     return settings
@@ -99,6 +163,13 @@ def get_upload_dir() -> Path:
     upload_dir = Path(settings.upload_dir)
     upload_dir.mkdir(parents=True, exist_ok=True)
     return upload_dir
+
+def get_state_dir() -> Path:
+    """Where transcripts and notes are written. Added by Super Protocol, 2026."""
+    state_dir = Path(get_settings().state_dir)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    return state_dir
+
 
 def get_templates_dir() -> Path:
     """Get templates directory path."""

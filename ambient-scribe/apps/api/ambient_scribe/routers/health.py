@@ -1,11 +1,24 @@
 # SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Health check router."""
-from fastapi import APIRouter, Depends
-from ambient_scribe.models import HealthResponse
-from ambient_scribe.deps import get_settings
+"""Health check router.
+
+Modified by Super Protocol, 2026: the dependencies this reports are the ones
+this deployment actually has — the ASR and diarization checkpoints on disk and
+the generation endpoint — rather than whether an NVIDIA API key was set.
+
+What it deliberately does NOT do is probe the generation endpoint. A health
+check that calls the model turns an engine still loading its weights into an
+unhealthy container, and Kubernetes then restarts the pod that was almost ready.
+"""
 import os
+
+from fastapi import APIRouter, Depends
+
+from ambient_scribe.deps import get_settings
+from ambient_scribe.models import HealthResponse
+from ambient_scribe.services.diarization import get_diarizer
+from ambient_scribe.services.transcription import get_transcriber
 
 router = APIRouter()
 
@@ -16,17 +29,18 @@ async def health_check(settings=Depends(get_settings)) -> HealthResponse:
     # Check service dependencies
     services = {}
     
-    # Check if NVIDIA API key is configured
-    if settings.nvidia_api_key:
-        services["nvidia_api"] = "configured"
+    transcriber = get_transcriber(settings)
+    services["asr"] = "loaded" if transcriber.loaded else (
+        "ready" if os.path.isdir(transcriber.model_dir) else "missing")
+
+    if not settings.enable_speaker_diarization:
+        services["diarization"] = "disabled"
     else:
-        services["nvidia_api"] = "not_configured"
-    
-    # Check if Riva URI is accessible (basic check)
-    if settings.riva_uri:
-        services["riva_asr"] = "configured"
-    else:
-        services["riva_asr"] = "not_configured"
+        diarizer = get_diarizer(settings)
+        services["diarization"] = "loaded" if diarizer.loaded else (
+            "ready" if diarizer.available else "missing")
+
+    services["generation"] = "configured" if settings.llm_model else "not_configured"
     
     # Check templates directory
     services["templates"] = "ok" if os.path.exists(settings.templates_dir) else "missing"

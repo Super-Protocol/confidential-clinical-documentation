@@ -3,6 +3,18 @@ name = "ambient-scribe-api"
 version = "0.1.0"
 description = "Ambient Scribe API - FastAPI backend for medical transcription and note generation"
 requires-python = ">=3.13,<3.14"
+# Modified by Super Protocol, 2026:
+#   - the NVIDIA Riva client is removed; recognition is faster-whisper (MIT)
+#     over CTranslate2 (MIT) and diarization is sherpa-onnx (Apache-2.0). That
+#     client only speaks to a Riva server, and there is no NIM here to speak to.
+#   - nemoguardrails and langchain-nvidia-ai-endpoints are removed with the
+#     guardrails path: upstream ships no rails configuration, the switch
+#     defaults off, and the engine it wires points at NVIDIA-hosted inference.
+#   - librosa and soundfile are removed: decoding an upload is one function, and
+#     faster-whisper already depends on PyAV, which is a complete ffmpeg. They
+#     brought numba, llvmlite, scipy and scikit-learn with them, plus an
+#     apt-installed ffmpeg and libsndfile1 in the image — about 850 MB for that
+#     one function. See services/audio.py.
 dependencies = [
     "fastapi==0.118.0",
     "uvicorn[standard]==0.35.0",
@@ -14,12 +26,9 @@ dependencies = [
     "python-dotenv==1.1.0",
     "httpx==0.28.1",
     "openai==1.81.0",
-    "nvidia-riva-client==2.19.1",
-    "librosa==0.11.0",
-    "soundfile==0.13.1",
+    "faster-whisper==1.2.1",
+    "sherpa-onnx==2.0.3",
     "numpy==2.1.3",
-    "nemoguardrails==0.16.0",
-    "langchain-nvidia-ai-endpoints==0.3.18",
     "slowapi==0.1.9",
 ]
 
@@ -50,3 +59,9 @@ line_length = 88
 [tool.ruff]
 line-length = 88
 target-version = "py313"
+
+# Added by Super Protocol, 2026: the fork's own tests live at the repository
+# root, beside the fixtures they generate.
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["../../../tests"]

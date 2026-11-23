@@ -1,5 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Modified by Super Protocol, 2026: transcripts are persisted, a transcript can
+# be deleted with its recording, and an upload is accepted on what it is rather
+# than on the Content-Type the browser guessed.
 
 """Transcription router."""
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, BackgroundTasks, Request
@@ -12,18 +16,43 @@ from pathlib import Path
 
 from ambient_scribe.models import Transcript, ErrorResponse
 from ambient_scribe.services.asr import transcribe_audio_file, stream_transcribe_audio_file
-from ambient_scribe.deps import get_settings, get_upload_dir
+from ambient_scribe.deps import get_settings, get_state_dir, get_upload_dir
+from ambient_scribe.utils.store import JsonStore, forget_audio
 
 router = APIRouter()
 
-# In-memory storage for demo (replace with database in production)
-_transcripts = {}
+# One JSON document per transcript on the deployment's own volume, not a dict that
+# a restart empties. The mapping interface is unchanged, so every call site below
+# and in `routers/notes.py` reads the same.
+_transcripts = JsonStore(get_state_dir() / "transcripts", Transcript)
 
 import logging
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 limiter = Limiter(key_func=get_remote_address)
+
+# Added by Super Protocol, 2026. Upstream rejects anything whose Content-Type does
+# not begin `audio/`, and a browser sends `application/octet-stream` for plenty of
+# ordinary recordings — an .m4a from a dictaphone among them. The extension decides,
+# and the decoder is the real gate: see services/audio.py, which either reads the
+# container or says it cannot.
+AUDIO_SUFFIXES = {".wav", ".mp3", ".m4a", ".mp4", ".aac", ".flac", ".ogg", ".oga",
+                  ".opus", ".webm", ".wma", ".aiff", ".aif", ".amr", ".3gp"}
+
+
+def _require_audio(file: UploadFile, logger) -> None:
+    suffix = Path(file.filename or "").suffix.lower()
+    content_type = (file.content_type or "").lower()
+    if content_type.startswith("audio/") or content_type.startswith("video/") \
+            or suffix in AUDIO_SUFFIXES:
+        return
+    logger.warning("rejected upload: filename=%s content_type=%s", file.filename, content_type)
+    raise HTTPException(
+        status_code=400,
+        detail=("That does not look like a recording. Accepted: "
+                + ", ".join(sorted(AUDIO_SUFFIXES))))
+
 
 @router.post("/file", response_model=Transcript)
 @limiter.limit("5/minute")
@@ -39,13 +68,7 @@ async def transcribe_file(
     logger = logging.getLogger("ambient_scribe.transcribe")
     logger.debug(f"Received file upload: filename={file.filename}, content_type={file.content_type}")
 
-    # Validate file type
-    if not file.content_type or not file.content_type.startswith("audio/"):
-        logger.warning(f"Rejected file: filename={file.filename}, content_type={file.content_type}")
-        raise HTTPException(
-            status_code=400,
-            detail="File must be an audio file"
-        )
+    _require_audio(file, logger)
 
     # Check file size
     # Note: UploadFile does not always have .size attribute, so log what we can
@@ -122,13 +145,7 @@ async def stream_transcribe_file(
     logger = logging.getLogger("ambient_scribe.transcribe")
     logger.debug(f"Received streaming file upload: filename={file.filename}, content_type={file.content_type}")
 
-    # Validate file type
-    if not file.content_type or not file.content_type.startswith("audio/"):
-        logger.warning(f"Rejected file: filename={file.filename}, content_type={file.content_type}")
-        raise HTTPException(
-            status_code=400,
-            detail="File must be an audio file"
-        )
+    _require_audio(file, logger)
 
     # Check file size
     file_size = getattr(file, "size", None)
@@ -266,6 +283,49 @@ async def list_transcripts() -> list[Transcript]:
         transcripts.append(transcript)
     
     return transcripts
+
+@router.delete("/{transcript_id}")
+async def delete_transcript(
+    transcript_id: str,
+    settings=Depends(get_settings),
+    upload_dir: Path = Depends(get_upload_dir),
+):
+    """Delete a transcript and the recording it was made from.
+
+    Added by Super Protocol, 2026. "Delete" has to reach the audio or it means
+    nothing: the recording is the protected health information, the transcript is
+    a derivative of it. Notes generated from this transcript are left alone and
+    are deleted individually — a signed note is a clinical record and deleting
+    one as a side effect of tidying up a recording is not a decision this
+    endpoint gets to make.
+    """
+    if transcript_id not in _transcripts:
+        raise HTTPException(status_code=404, detail="Transcript not found")
+    transcript = _transcripts[transcript_id]
+    audio_deleted = forget_audio(upload_dir, transcript)
+    del _transcripts[transcript_id]
+    return {
+        "message": f"Transcript {transcript_id} deleted",
+        "audio_deleted": audio_deleted,
+    }
+
+
+@router.delete("/{transcript_id}/audio")
+async def delete_transcript_audio(
+    transcript_id: str,
+    upload_dir: Path = Depends(get_upload_dir),
+):
+    """Delete only the recording, keeping the transcript's text and timecodes."""
+    if transcript_id not in _transcripts:
+        raise HTTPException(status_code=404, detail="Transcript not found")
+    transcript = _transcripts[transcript_id]
+    deleted = forget_audio(upload_dir, transcript)
+    if deleted:
+        transcript.audio_url = None
+        _transcripts[transcript_id] = transcript
+    return {"message": f"Recording for {transcript_id} deleted" if deleted
+            else "No recording was held for this transcript", "audio_deleted": deleted}
+
 
 async def cleanup_file(file_path: Path):
     """Background task to cleanup uploaded files."""

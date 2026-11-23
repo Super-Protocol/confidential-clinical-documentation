@@ -1,5 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Modified by Super Protocol, 2026: a transcript carries the diarization score
+# that decided whether its speaker labels may be shown.
 
 """Pydantic models for API requests and responses."""
 from pydantic import BaseModel, Field
@@ -24,6 +27,13 @@ class Transcript(BaseModel):
     filename: Optional[str] = Field(None, description="Original filename")
     audio_url: Optional[str] = Field(None, description="URL to access the audio file")
     speaker_roles: Optional[Dict[int, str]] = Field(None, description="Mapping of speaker_tag to role (patient/provider)")
+    # Added by Super Protocol, 2026. The diarization result's own score and
+    # verdict: `status`, the reason, the floors it was judged against, and the
+    # wall clock the recognition and the diarization each took. A reader of this
+    # transcript — the UI, the note generator, or a clinician — can see whether
+    # the speaker labels are to be trusted, which is not something upstream
+    # recorded anywhere.
+    diarization: Optional[Dict[str, Any]] = Field(None, description="Diarization score and verdict")
 
 class NoteRequest(BaseModel):
     """Request to generate a medical note."""

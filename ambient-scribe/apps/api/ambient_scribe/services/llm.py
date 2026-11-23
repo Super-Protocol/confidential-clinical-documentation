@@ -1,11 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Modified by Super Protocol, 2026: generation points at the deployment's own
+# OpenAI-compatible endpoint, the NeMo Guardrails path is removed, and the
+# transcript handed to the model no longer guesses who spoke.
 
 """Large Language Model service for note generation."""
 from datetime import datetime
 from typing import AsyncGenerator, Dict, Any
 from openai import AsyncOpenAI
-from nemoguardrails import LLMRails, RailsConfig
 import logging
 
 from ambient_scribe.models import (
@@ -14,11 +17,6 @@ from ambient_scribe.models import (
 from ambient_scribe.services.templates import (
     render_template,
     get_template_info,
-)
-from ambient_scribe.services.guardrails import (
-    apply_input_guardrails,
-    apply_output_guardrails,
-    validate_privacy_compliance
 )
 from ambient_scribe.deps import Settings, get_templates_dir
 from ambient_scribe.utils.timecodes import format_timecode
@@ -38,8 +36,6 @@ async def generate_note_service(
 
     try:
         # Validate settings
-        if not settings.nvidia_api_key:
-            raise ValueError("NVIDIA API key not configured")
         if not settings.openai_base_url:
             raise ValueError("OpenAI base URL not configured")
         if not settings.llm_model:
@@ -47,37 +43,13 @@ async def generate_note_service(
 
         # Initialize OpenAI client
         client = AsyncOpenAI(
-            api_key=settings.nvidia_api_key,
-            base_url=settings.openai_base_url
+            api_key=settings.llm_api_key or "not-used",
+            base_url=settings.openai_base_url,
+            timeout=settings.llm_timeout_seconds,
         )
 
         # Prepare transcript text with speaker roles
         transcript_text = format_transcript_with_speakers(transcript)
-        
-        # Apply input guardrails to protect patient information
-        if settings.enable_guardrails:
-            try:
-                filtered_transcript = await apply_input_guardrails(transcript_text, settings)
-                if filtered_transcript != transcript_text:
-                    trace_events.append(TraceEvent(
-                        event_type="guardrails_applied",
-                        message="Input guardrails applied: sensitive information masked",
-                        metadata={"original_length": len(transcript_text), "filtered_length": len(filtered_transcript)}
-                    ))
-                    transcript_text = filtered_transcript
-                else:
-                    trace_events.append(TraceEvent(
-                        event_type="guardrails_passed",
-                        message="Input guardrails applied: no sensitive information detected",
-                        metadata={"text_length": len(transcript_text)}
-                    ))
-            except Exception as e:
-                logger.warning(f"Input guardrails failed: {str(e)}")
-                trace_events.append(TraceEvent(
-                    event_type="guardrails_error",
-                    message=f"Input guardrails failed: {str(e)}",
-                    metadata={"error": str(e)}
-                ))
         
         # Add trace event for transcript processing
         trace_events.append(TraceEvent(
@@ -184,54 +156,6 @@ async def stream_note_service(
             custom_sections=request.custom_sections
         )
         
-        # Apply output guardrails to final note
-        if settings.enable_guardrails:
-            yield {
-                "type": "trace",
-                "event": "guardrails_output",
-                "message": "Applying output guardrails...",
-                "timestamp": datetime.now().isoformat()
-            }
-            
-            try:
-                filtered_note = await apply_output_guardrails(rendered_note, settings)
-                
-                # Validate privacy compliance
-                validation_result = await validate_privacy_compliance(filtered_note, settings)
-                
-                yield {
-                    "type": "trace",
-                    "event": "privacy_validation",
-                    "message": validation_result["message"],
-                    "timestamp": datetime.now().isoformat(),
-                    "metadata": validation_result
-                }
-                
-                if filtered_note != rendered_note:
-                    yield {
-                        "type": "trace",
-                        "event": "output_guardrails_applied",
-                        "message": "Output guardrails applied: sensitive information masked",
-                        "timestamp": datetime.now().isoformat(),
-                        "metadata": {
-                            "original_length": len(rendered_note),
-                            "filtered_length": len(filtered_note),
-                            "is_compliant": validation_result["is_compliant"]
-                        }
-                    }
-                
-                rendered_note = filtered_note
-                
-            except Exception as e:
-                logger.warning(f"Output guardrails failed: {str(e)}")
-                yield {
-                    "type": "trace",
-                    "event": "guardrails_error",
-                    "message": f"Output guardrails failed: {str(e)}",
-                    "timestamp": datetime.now().isoformat(),
-                    "metadata": {"error": str(e)}
-                }
-        
         yield {
             "type": "complete",
             "note_markdown": rendered_note,
@@ -252,15 +176,6 @@ async def generate_section_service(
     settings: Settings
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """Generate content for a specific note section with streaming traces."""
-    
-    # Initialize NeMo Guardrails if enabled
-    rails = None
-    if settings.enable_guardrails and settings.guardrails_config_path:
-        try:
-            config = RailsConfig.from_path(settings.guardrails_config_path)
-            rails = LLMRails(config)
-        except Exception as e:
-            logger.warning(f"Failed to initialize NeMo Guardrails: {str(e)}")
     
     section_prompts = {
         # Core SOAP sections
@@ -338,22 +253,16 @@ Transcript:
     }
     
     try:
-        # Use NeMo Guardrails if enabled and initialized
-        if rails is not None:
-            messages = [{"role": "user", "content": enhanced_prompt}]
-            stream = rails.stream_async(messages=messages)
-        else:
-            # Default OpenAI streaming
-            stream = await client.chat.completions.create(
-                model=settings.llm_model,
-                messages=[
-                    {"role": "system", "content": system_message},
-                    {"role": "user", "content": enhanced_prompt}
-                ],
-                max_tokens=1024,
-                temperature=0.1,
-                stream=True
-            )
+        stream = await client.chat.completions.create(
+            model=settings.llm_model,
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": enhanced_prompt}
+            ],
+            max_tokens=1024,
+            temperature=0.1,
+            stream=True
+        )
         
         full_response = ""
         reasoning_buffer = ""
@@ -363,13 +272,8 @@ Transcript:
         
         # Stream the LLM response chunk by chunk
         async for chunk in stream:
-            # Handle different chunk formats for OpenAI vs NeMo Guardrails
-            if rails is not None:
-                chunk_content = chunk  # NeMo Guardrails returns text directly
-                full_response += chunk_content
-            else:
-                chunk_content = chunk.choices[0].delta.content if chunk.choices[0].delta.content else ""
-                full_response += chunk_content
+            chunk_content = chunk.choices[0].delta.content if chunk.choices[0].delta.content else ""
+            full_response += chunk_content
                 
             # Check for section markers
             if "REASONING:" in full_response and not in_reasoning:
@@ -462,16 +366,6 @@ Transcript:
             # Remove any standalone asterisks or other formatting artifacts
             section_content = section_content.replace('**\n', '').replace('\n**', '').replace('**', '')
         
-        # Apply output guardrails to section content
-        if settings.enable_guardrails and section_content:
-            try:
-                filtered_content = await apply_output_guardrails(section_content, settings)
-                if filtered_content != section_content:
-                    logger.info(f"Section {section} content filtered for privacy")
-                section_content = filtered_content
-            except Exception as e:
-                logger.warning(f"Section content filtering failed for {section}: {str(e)}")
-        
         # Final completion event
         yield {
             "event": "llm_reasoning_complete",
@@ -502,39 +396,63 @@ Transcript:
         }
 
 def format_transcript_with_speakers(transcript: Transcript) -> str:
-    """Format transcript for LLM processing with enhanced speaker visualization."""
-    
-    formatted_text = []
-    
-    # Use stored speaker roles if available, otherwise fall back to keyword matching
-    if transcript.speaker_roles:
-        speaker_roles = {
-            tag: role.title() for tag, role in transcript.speaker_roles.items()
-        }
+    """Format a transcript for the model, stating plainly who is known to have spoken.
+
+    Modified by Super Protocol, 2026, and this is the change that matters most in
+    the port.
+
+    Upstream, when `speaker_roles` was empty, fell back to GUESSING the roles from
+    keywords: a line containing "my symptoms" made that speaker the Patient, a
+    line containing "recommend" made them the Provider. The guess was then printed
+    into the prompt as fact — "Patient (Speaker 1): ..." — and the model wrote a
+    note from it. Since upstream's streaming path never populated
+    `speaker_roles` at all and streaming is its default, the keyword guess was the
+    ordinary path rather than the fallback.
+
+    A clinical note built on a keyword guess about who was speaking is the exact
+    failure this deployment exists to not produce: it is fluent, correctly
+    structured, and attributes the patient's symptoms to the clinician. So there
+    is no guess here. Either diarization passed its floors and the roles were
+    identified, or the transcript goes to the model labelled as unattributed and
+    the model is told not to attribute.
+    """
+    status = (transcript.diarization or {}).get("status", "absent")
+    roles = {tag: role.title() for tag, role in (transcript.speaker_roles or {}).items()}
+    speakers_found = (transcript.diarization or {}).get("speakersFound", 0)
+
+    header: list[str] = []
+    if roles:
+        named = ", ".join(f"Speaker {tag} is the {role.lower()}" for tag, role in sorted(roles.items()))
+        header.append(f"This transcript is speaker-separated and attributed: {named}.")
+    elif status == "single-speaker":
+        header.append(
+            "This recording contains ONE voice. Treat it as dictation by the clinician. "
+            "Do not attribute any statement to a patient and do not invent a second speaker.")
     else:
-        speaker_roles = {}  # Track potential roles based on content
-        
-        # First pass - try to identify speaker roles
-        for segment in transcript.segments:
-            text_lower = segment.text.lower()
-            if segment.speaker_tag:
-                if any(term in text_lower for term in ["my symptoms", "i feel", "i have been", "i am experiencing"]):
-                    speaker_roles[segment.speaker_tag] = "Patient"
-                elif any(term in text_lower for term in ["recommend", "prescribe", "diagnosis", "examination", "assessment"]):
-                    speaker_roles[segment.speaker_tag] = "Provider"
-    
-    # Format transcript with roles
+        reason = (transcript.diarization or {}).get("reason", "")
+        header.append(
+            "This transcript is NOT attributed: it is not known which words were said by the "
+            "clinician and which by the patient"
+            + (f" ({reason})" if reason else "") + ". "
+            "Write the note from the clinical content only. Do NOT state or imply who said "
+            "anything, do not infer roles from the wording, and where a fact's source matters "
+            "say that the source is not identified in the recording.")
+        if speakers_found > 1:
+            header.append(
+                f"The recording appears to contain {speakers_found} voices, but the separation "
+                "was not reliable enough to use.")
+
+    formatted_text = []
     for segment in transcript.segments:
-        if segment.speaker_tag in speaker_roles:
-            speaker = f"{speaker_roles[segment.speaker_tag]} (Speaker {segment.speaker_tag})"
+        if segment.speaker_tag is not None and segment.speaker_tag in roles:
+            speaker = f"{roles[segment.speaker_tag]} (Speaker {segment.speaker_tag})"
+        elif segment.speaker_tag is not None:
+            speaker = f"Speaker {segment.speaker_tag}"
         else:
-            speaker = f"Speaker {segment.speaker_tag}" if segment.speaker_tag else "Speaker"
-        
-        # Format timestamp as MM:SS with clear formatting
+            speaker = "Unidentified speaker"
         timestamp = f"**[{format_timecode(segment.start)}]**"
-        
         formatted_text.append(f"{timestamp} {speaker}: {segment.text}")
-    
-    return '\n\n'.join(formatted_text)  # Add extra newline for better readability
+
+    return "\n".join(header) + "\n\n" + "\n\n".join(formatted_text)
 
 

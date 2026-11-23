@@ -1,5 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Modified by Super Protocol, 2026: completions come from the deployment's own
+# endpoint, not from an NVIDIA-hosted one.
 
 """Autocomplete suggestions service for note editing."""
 import re
@@ -115,8 +118,8 @@ async def get_autocomplete_suggestions(
         context_matches = _get_context_based_suggestions(prefix_lower, context, max_suggestions // 3)
         suggestions.extend(context_matches)
     
-    # 4. AI-powered suggestions (if NVIDIA API is available)
-    if settings and settings.nvidia_api_key and len(suggestions) < max_suggestions:
+    # 4. Model-generated suggestions, from the deployment's own endpoint
+    if settings and settings.llm_model and len(suggestions) < max_suggestions:
         try:
             ai_matches = await _get_ai_powered_suggestions(
                 prefix, context, transcript, settings, max_suggestions - len(suggestions)
@@ -225,13 +228,14 @@ async def _get_ai_powered_suggestions(
     settings: Settings,
     max_suggestions: int
 ) -> List[str]:
-    """Get AI-powered suggestions using NVIDIA API."""
+    """Get model-generated suggestions from this deployment's own endpoint."""
     if not HAS_OPENAI:
         return []
     
     client = AsyncOpenAI(
-        api_key=settings.nvidia_api_key,
-        base_url=settings.openai_base_url
+        api_key=settings.llm_api_key or "not-used",
+        base_url=settings.openai_base_url,
+        timeout=settings.llm_timeout_seconds,
     )
     
     # Build prompt for AI suggestions

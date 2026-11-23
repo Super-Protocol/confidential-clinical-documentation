@@ -13,10 +13,6 @@
   "dependencies": {
     "@ariakit/react": "^0.4.0",
     "@date-fns/tz": "^1.1.0",
-    "@kui/foundations": "file:./kui-foundations-0.403.0.tgz",
-    "@kui/react": "file:./kui-react-0.402.1.tgz",
-    "@nv-brand-assets/icons": "file:./nv-brand-assets-icons-3.8.0.tgz",
-    "@nv-brand-assets/react-icons-inline": "file:./nv-brand-assets-react-icons-inline-3.8.0.tgz",
     "@radix-ui/primitive": "^1.0.1",
     "@radix-ui/react-accordion": "^1.1.2",
     "@radix-ui/react-avatar": "^1.0.4",

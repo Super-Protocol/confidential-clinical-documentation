@@ -1,0 +1,112 @@
+{
+  "_comment": [
+    "Every model byte this image carries, pinned by sha256. Added by Super Protocol, 2026.",
+    "Upstream fetches nothing: its models live inside two NVIDIA NIM containers, which",
+    "need an NGC credential and five GPUs between them. These are fetched once at BUILD",
+    "time and baked in, so a deployment reaches no model host at all and the image digest",
+    "the listing pins covers the weights as well as the code. `fetch_models.py` refuses a",
+    "file whose sha256 does not match, which is what makes the pin a pin.",
+    "Licences are recorded here because they travel with the bytes: see /licenses in the",
+    "built image and the listing's own `licences` output."
+  ],
+  "asr": {
+    "title": "Distil-Whisper large-v3, CTranslate2 conversion",
+    "purpose": "speech recognition",
+    "repo": "Systran/faster-distil-whisper-large-v3",
+    "revision": "c3058b475261292e64a0412df1d2681c06260fab",
+    "licence": {
+      "spdx": "MIT",
+      "url": "https://huggingface.co/Systran/faster-distil-whisper-large-v3",
+      "commercialSelfHosting": true,
+      "conditions": [
+        "No restriction on use, commercial or otherwise, and no user-count ceiling.",
+        "The licence and the copyright notice travel with any redistribution."
+      ]
+    },
+    "target": "/models/asr",
+    "files": [
+      {
+        "path": "config.json",
+        "sha256": "90c55f775cc4e0bb17293d0bf12f96557a486f20dea886fabd8e6075a3588b21",
+        "size": 2690
+      },
+      {
+        "path": "model.bin",
+        "sha256": "b79368e19b6623813609431a6e5ee309a71506701ebc49fd7820e692dec7c5f5",
+        "size": 1512927867
+      },
+      {
+        "path": "preprocessor_config.json",
+        "sha256": "7ccc62c6f2765af1f3b46c00c9b5894426835a05021c8b9c01eecb6dfb542711",
+        "size": 340
+      },
+      {
+        "path": "tokenizer.json",
+        "sha256": "6d8cbd7cd0d8d5815e478dac67b85a26bbe77c1f5e0c6d76d1ce2abc0e5f21ca",
+        "size": 2480617
+      },
+      {
+        "path": "vocabulary.json",
+        "sha256": "c69260f2ab26d659b7c398f9a2b2b48ed0df16c3b47d7326782fd9cba71690c1",
+        "size": 1068114
+      }
+    ]
+  },
+  "diarization_segmentation": {
+    "title": "pyannote segmentation 3.0, ONNX conversion",
+    "purpose": "speech/speaker-change segmentation",
+    "repo": "csukuangfj/sherpa-onnx-pyannote-segmentation-3-0",
+    "revision": "9403a6902bb58e3d5ae8c7e77c3422de279db2e0",
+    "licence": {
+      "spdx": "MIT",
+      "holder": "CNRS",
+      "url": "https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/blob/main/LICENSE",
+      "commercialSelfHosting": true,
+      "conditions": [
+        "No restriction on use, commercial or otherwise.",
+        "The MIT notice travels with any redistribution; it is at /licenses/models/."
+      ],
+      "note": "Converted from pyannote/segmentation-3.0, which is MIT and gated behind an acceptance click on Hugging Face. This conversion is not gated, and MIT permits the redistribution either way, so a deployment needs no Hugging Face account."
+    },
+    "target": "/models/diarization",
+    "files": [
+      {
+        "path": "model.onnx",
+        "rename": "segmentation.onnx",
+        "sha256": "220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079",
+        "size": 5992913
+      },
+      {
+        "path": "LICENSE",
+        "rename": "LICENSE.segmentation",
+        "sha256": "14d7016ad68e7394d6e6b78d96cc2ae431c905287b89674cfdf021e79e62b8ba",
+        "size": 1061
+      }
+    ]
+  },
+  "diarization_embedding": {
+    "title": "NVIDIA NeMo TitaNet-Large, ONNX conversion",
+    "purpose": "speaker embeddings for clustering",
+    "repo": "csukuangfj/speaker-embedding-models",
+    "revision": "a8055d6daef723a6a4ecf4de233708575bf4994f",
+    "licence": {
+      "spdx": "CC-BY-4.0",
+      "url": "https://huggingface.co/nvidia/speakerverification_en_titanet_large",
+      "commercialSelfHosting": true,
+      "conditions": [
+        "Commercial use permitted.",
+        "ATTRIBUTION IS REQUIRED: the model is credited to NVIDIA on the listing page, in /licenses/models/ and in this manifest.",
+        "Changes made must be indicated: the file is an ONNX export of the published checkpoint, unmodified in weights."
+      ]
+    },
+    "target": "/models/diarization",
+    "files": [
+      {
+        "path": "nemo_en_titanet_large.onnx",
+        "rename": "embedding.onnx",
+        "sha256": "d51abcf31717ef28162f26acb9d44dd4127c3d44c9b8624f699f3425daca8e77",
+        "size": 101405493
+      }
+    ]
+  }
+}

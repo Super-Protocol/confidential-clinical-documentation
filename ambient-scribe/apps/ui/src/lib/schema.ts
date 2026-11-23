@@ -26,6 +26,22 @@ export const TranscriptSchema = z.object({
   filename: z.string().optional(),
   audio_url: z.string().optional(),
   speaker_roles: z.record(z.string()).optional(),
+  // Added by Super Protocol, 2026: the diarization score and verdict the API
+  // computed, so the UI can say whether the speaker labels are trustworthy
+  // instead of showing them as if they always are.
+  diarization: z.object({
+    status: z.string(),
+    reason: z.string().optional(),
+    speakersFound: z.number().optional(),
+    assignedWordFraction: z.number().optional(),
+    meanSegmentPurity: z.number().optional(),
+    speechCoverage: z.number().optional(),
+    audioSeconds: z.number().optional(),
+    asrSeconds: z.number().optional(),
+    diarizationSeconds: z.number().optional(),
+    secondsPerAudioMinute: z.number().optional(),
+    floors: z.record(z.number()).optional(),
+  }).passthrough().optional(),
 })
 
 // Note types

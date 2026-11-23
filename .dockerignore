@@ -1,0 +1,15 @@
+# Added by Super Protocol, 2026. The build context is the repository root, so
+# keep out everything the image does not need — a 40 MB fixture set and a
+# node_modules tree are a slow build and a bigger attack surface for nothing.
+.git
+.github
+**/node_modules
+**/dist
+**/.venv
+**/__pycache__
+**/*.pyc
+tests/fixtures/*.wav
+tests/fixtures/*.truth.json
+tests/fixtures/voices
+images
+ambient-scribe/sample_data

@@ -14,8 +14,15 @@ import { Toaster } from '@/components/Toaster'
 import { AudioPlayer, AudioPlayerRef } from '@/components/AudioPlayer'
 import AmbientScribeAPI from '@/lib/api'
 import { Transcript, TraceEvent, TemplateInfo, NoteResponse } from '@/lib/schema'
-import { Health, Microphone, FolderOpen } from '@nv-brand-assets/react-icons-inline'
-import { AppBar, Button, Text, ThemeProvider } from '@kui/react'
+// Modified by Super Protocol, 2026: upstream's icons come from
+// `@nv-brand-assets/react-icons-inline`, a tarball vendored into this repository
+// under `LicenseRef-NvidiaProprietary` — NVIDIA trade dress, which an image we
+// publish may not redistribute. `lucide-react` (ISC) was already a dependency.
+import { Stethoscope as Health, Mic as Microphone, FolderOpen } from 'lucide-react'
+// Modified by Super Protocol, 2026: see `src/components/kit.tsx` — the four
+// Kaizen UI components this file used, rebuilt, so no NVIDIA-licensed tarball
+// travels in a published image.
+import { AppBar, Button, Text, ThemeProvider } from '../components/kit'
 import { Volume2, FileText } from 'lucide-react'
 
 function App() {

@@ -1,0 +1,250 @@
+[
+ [
+  "clinician",
+  "Good morning, Mrs Harper. I'm Doctor Ellis. Thanks for coming in. What's brought you to see me today?"
+ ],
+ [
+  "patient",
+  "Morning, doctor. It's this chest pain. It started about three weeks ago and it just hasn't settled."
+ ],
+ [
+  "clinician",
+  "Tell me about the pain. Where exactly do you feel it?"
+ ],
+ [
+  "patient",
+  "Right here, in the middle of my chest. Sometimes it goes up into my jaw and down my left arm."
+ ],
+ [
+  "clinician",
+  "And when does it come on?"
+ ],
+ [
+  "patient",
+  "Mostly when I'm walking up the hill to the shops. If I stop and rest it eases off after a few minutes."
+ ],
+ [
+  "clinician",
+  "How would you describe it? Sharp, dull, crushing?"
+ ],
+ [
+  "patient",
+  "Like a heavy weight pressing down. Not stabbing. More of a tightness."
+ ],
+ [
+  "clinician",
+  "On a scale of one to ten, how bad does it get?"
+ ],
+ [
+  "patient",
+  "At its worst, maybe a seven. Usually it's a four or five."
+ ],
+ [
+  "clinician",
+  "Does anything else come with it? Breathlessness, sweating, nausea?"
+ ],
+ [
+  "patient",
+  "I do get short of breath. And last Tuesday I felt quite sick and clammy with it."
+ ],
+ [
+  "clinician",
+  "Have you had any pain at rest, or anything that woke you at night?"
+ ],
+ [
+  "patient",
+  "No, nothing at night. Only when I'm moving about."
+ ],
+ [
+  "clinician",
+  "Any swelling in your ankles, or palpitations?"
+ ],
+ [
+  "patient",
+  "My ankles have been a bit puffy in the evenings, yes. No fluttering though."
+ ],
+ [
+  "clinician",
+  "Let's go through your background. Do you have any diagnosed conditions?"
+ ],
+ [
+  "patient",
+  "High blood pressure, for about twelve years. And they told me I was borderline diabetic two years ago."
+ ],
+ [
+  "clinician",
+  "What medication are you taking at the moment?"
+ ],
+ [
+  "patient",
+  "Ramipril, five milligrams in the morning. And atorvastatin, twenty milligrams at night."
+ ],
+ [
+  "clinician",
+  "Are you taking those every day?"
+ ],
+ [
+  "patient",
+  "Most days. I forget the statin sometimes, maybe twice a week."
+ ],
+ [
+  "clinician",
+  "Any allergies to medicines?"
+ ],
+ [
+  "patient",
+  "Penicillin. I came out in a rash when I was a girl."
+ ],
+ [
+  "clinician",
+  "And do you smoke?"
+ ],
+ [
+  "patient",
+  "I gave up four years ago. I smoked about fifteen a day for thirty years before that."
+ ],
+ [
+  "clinician",
+  "Alcohol?"
+ ],
+ [
+  "patient",
+  "A glass of wine with dinner, maybe four nights a week."
+ ],
+ [
+  "clinician",
+  "Is there heart disease in the family?"
+ ],
+ [
+  "patient",
+  "My father had a heart attack at fifty-eight. He survived it but he was never the same."
+ ],
+ [
+  "clinician",
+  "That's important, thank you. Let me examine you now. Can you sit forward for me?"
+ ],
+ [
+  "patient",
+  "Of course."
+ ],
+ [
+  "clinician",
+  "Your blood pressure is one hundred and fifty-two over ninety-four. Pulse is eighty-eight and regular."
+ ],
+ [
+  "clinician",
+  "Heart sounds are normal, no murmurs. Chest is clear. There's mild pitting oedema to both ankles."
+ ],
+ [
+  "patient",
+  "Is that the swelling you meant?"
+ ],
+ [
+  "clinician",
+  "Yes, and it's mild. Now, I want to be straightforward with you about what I think is going on."
+ ],
+ [
+  "patient",
+  "Please do."
+ ],
+ [
+  "clinician",
+  "The pattern you describe \u2014 pain on exertion that settles with rest, radiating to the jaw and arm \u2014 is typical of angina."
+ ],
+ [
+  "patient",
+  "Is that a heart attack?"
+ ],
+ [
+  "clinician",
+  "No. Angina is the heart muscle not getting enough blood when it's working hard. It's a warning, not a heart attack."
+ ],
+ [
+  "patient",
+  "That's frightening to hear."
+ ],
+ [
+  "clinician",
+  "It's treatable, and the fact that you came in is the right thing. But I don't want to guess, so we'll investigate."
+ ],
+ [
+  "clinician",
+  "I'm going to arrange an ECG today, and bloods \u2014 full blood count, kidney function, lipids, and an HbA1c for the diabetes."
+ ],
+ [
+  "clinician",
+  "I'm also referring you to the rapid access chest pain clinic. They'll see you within two weeks."
+ ],
+ [
+  "patient",
+  "Two weeks. What do I do in the meantime?"
+ ],
+ [
+  "clinician",
+  "I'm starting you on a glyceryl trinitrate spray. Two sprays under the tongue when the pain comes."
+ ],
+ [
+  "clinician",
+  "Sit down before you use it. If the pain is not gone fifteen minutes after a second dose, call an ambulance."
+ ],
+ [
+  "patient",
+  "Call an ambulance. Right."
+ ],
+ [
+  "clinician",
+  "I'm also starting aspirin, seventy-five milligrams daily, and increasing your atorvastatin to eighty milligrams at night."
+ ],
+ [
+  "patient",
+  "Will the aspirin upset my stomach?"
+ ],
+ [
+  "clinician",
+  "It can. Take it with food. If you get indigestion or any black stools, tell us straight away."
+ ],
+ [
+  "patient",
+  "And should I stop walking up that hill?"
+ ],
+ [
+  "clinician",
+  "Don't stop being active, but don't push through pain. Walk on the flat, stop when it comes on, use the spray."
+ ],
+ [
+  "patient",
+  "What about my work? I do three shifts a week at the garden centre."
+ ],
+ [
+  "clinician",
+  "Lifting heavy bags is the part I'd avoid for now. Light duties until the clinic has seen you."
+ ],
+ [
+  "patient",
+  "I'll speak to them."
+ ],
+ [
+  "clinician",
+  "One more thing. Please take the statin every day, not most days. It matters more than almost anything else here."
+ ],
+ [
+  "patient",
+  "I will. I've got a pill box, I'll start using it properly."
+ ],
+ [
+  "clinician",
+  "Good. So: ECG and bloods today, chest pain clinic within two weeks, GTN spray as needed, aspirin and the higher statin."
+ ],
+ [
+  "clinician",
+  "And the red flag: pain at rest, or pain that doesn't go after two sprays and fifteen minutes, is a nine-nine-nine call."
+ ],
+ [
+  "patient",
+  "Got it. Thank you, doctor. I feel better knowing what it is."
+ ],
+ [
+  "clinician",
+  "You're welcome. The nurse will do the ECG now. I'll ring you with the blood results on Friday."
+ ]
+]

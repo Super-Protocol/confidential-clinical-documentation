@@ -1,11 +1,15 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by Super Protocol, 2026: a speaker is labelled only when the API says
+ * the attribution was measured, and the transcript carries a banner saying what
+ * the diarization found.
  */
 
 import { useState, useEffect, useRef } from 'react'
 import { Transcript, TranscriptSegment } from '@/lib/schema'
-import { MessageSquare, Clock, User, Loader2, FileText, ChevronDown } from 'lucide-react'
+import { MessageSquare, Clock, User, Loader2, FileText, ChevronDown, Users, AlertTriangle } from 'lucide-react'
 
 interface TranscriptViewerProps {
   transcript: Transcript | null
@@ -242,18 +246,17 @@ export function TranscriptViewer({ transcript, isLoading, currentPartial, onSeek
   }
 
   const getSpeakerLabel = (speakerTag?: number) => {
-    // Use stored speaker roles if available
-    console.warn(transcript?.speaker_roles)
+    // Modified by Super Protocol, 2026. Upstream's fallback here read
+    // `if (speakerTag === 0) return 'Provider'; if (speakerTag === 1) return 'Patient'`
+    // — so with no roles detected the UI still showed every cluster 0 as the
+    // clinician and every cluster 1 as the patient, which is a coin toss
+    // displayed as a fact. The cluster index carries no role information at all.
     if (transcript?.speaker_roles && speakerTag !== undefined && transcript.speaker_roles[speakerTag]) {
       const role = transcript.speaker_roles[speakerTag]
-      return role === 'patient' ? 'Patient' : role === 'provider' ? 'Provider' : `Speaker ${speakerTag}`
+      return role === 'patient' ? 'Patient' : role === 'provider' ? 'Clinician' : `Speaker ${speakerTag + 1}`
     }
-    
-    // Fallback to original hardcoded logic
-    if (speakerTag === 0) return 'Provider'
-    if (speakerTag === 1) return 'Patient'
-    if (speakerTag !== undefined) return `Speaker ${speakerTag}`
-    return 'Speaker'
+    if (speakerTag !== undefined) return `Speaker ${speakerTag + 1}`
+    return 'Unidentified speaker'
   }
 
   const getSpeakerClasses = (speakerTag?: number) => {
@@ -390,6 +393,11 @@ export function TranscriptViewer({ transcript, isLoading, currentPartial, onSeek
           )}
         </div>
       </div>
+
+      {/* Added by Super Protocol, 2026: what the diarization decided, in words a
+          clinician can act on. A note generated from an unattributed transcript is
+          still useful; one silently attributed to the wrong person is not. */}
+      <DiarizationBanner diarization={normalizedTranscript.diarization} />
 
       {/* Transcript Content */}
       <div className="flex-1 overflow-y-auto" ref={scrollContainerRef}>
@@ -552,6 +560,47 @@ export function TranscriptViewer({ transcript, isLoading, currentPartial, onSeek
           <ChevronDown className="h-4 w-4" />
         </button>
       )}
+    </div>
+  )
+}
+
+// Added by Super Protocol, 2026.
+function DiarizationBanner({ diarization }: { diarization?: Transcript['diarization'] }) {
+  if (!diarization) return null
+  const { status, reason, speakersFound } = diarization
+
+  if (status === 'ok') {
+    return (
+      <div className="mx-4 mt-3 flex items-start gap-2 rounded-md border border-accent-green bg-accent-green-subtle px-3 py-2 text-xs text-primary">
+        <Users className="mt-0.5 h-3.5 w-3.5 shrink-0 text-accent-green" />
+        <span>
+          Speakers separated: {speakersFound} voices found, and the separation passed this
+          deployment&rsquo;s reliability floors. Roles below were identified from the conversation.
+        </span>
+      </div>
+    )
+  }
+
+  const single = status === 'single-speaker'
+  return (
+    <div
+      className={`mx-4 mt-3 flex items-start gap-2 rounded-md border px-3 py-2 text-xs text-primary ${
+        single
+          ? 'border-accent-blue bg-accent-blue-subtle'
+          : 'border-accent-yellow bg-accent-yellow/10'
+      }`}
+    >
+      <AlertTriangle
+        className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${single ? 'text-accent-blue' : 'text-accent-yellow'}`}
+      />
+      <span>
+        <strong>
+          {single ? 'One voice in this recording.' : 'Speakers were not reliably separated.'}
+        </strong>{' '}
+        {reason || 'No speaker attribution is shown for this transcript.'} The note will be written
+        from the clinical content without attributing anything to a speaker — read it with that in
+        mind.
+      </span>
     </div>
   )
 }

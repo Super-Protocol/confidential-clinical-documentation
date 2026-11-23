@@ -1,3 +1,67 @@
+# Confidential Clinical Documentation
+
+> Based on the open-source [NVIDIA Ambient Provider reference architecture](https://github.com/NVIDIA-AI-Blueprints/ambient-provider),
+> Apache-2.0, forked at release `v1.0.0` / commit `eb4c0be5` and modified by Super Protocol — see
+> [`MODIFICATIONS.md`](./MODIFICATIONS.md). NVIDIA is a trademark of NVIDIA Corporation. This fork
+> is not produced, endorsed or supported by NVIDIA.
+
+This fork runs the provider agent — a recorded consultation in, a clinical note out — inside a
+confidential cluster space, on open components:
+
+| | upstream | here |
+|---|---|---|
+| speech recognition | Parakeet 1.1B CTC NIM (NGC credential, 75 GB of a card) | faster-whisper over distil-large-v3, MIT, on the CPU |
+| speaker diarization | sortformer, inside that NIM | sherpa-onnx + pyannote segmentation 3.0 (MIT) + NeMo TitaNet-Large (CC-BY-4.0), on the CPU |
+| note generation | Llama-3.3-Nemotron-Super-49B NIM (2 × H100) or NVIDIA-hosted inference | any OpenAI-compatible endpoint; the marketplace listing serves open weights on one card beside it |
+| content safety | NeMo Guardrails wired to NVIDIA-hosted inference, switched off, with no rails configuration shipped | removed, and said so |
+| footprint | ≈ 400 GB across five A100s, by upstream's README | one GPU for generation; recognition and diarization on CPU |
+| network | NGC, and `integrate.api.nvidia.com` on the hosted path | nothing. The models are baked into the image and pinned by sha256 |
+
+**The change that matters most is not the substitution.** Upstream attributes speakers
+unconditionally and, in three places, guesses who was speaking when it does not know — a keyword
+match on "my symptoms", a cluster index read as a role, and a prompt that asks the model to "be
+generous". A clinical note built on any of those is fluent, correctly structured, and puts the
+patient's symptoms in the clinician's mouth. Nothing raises; a human signs it. Here every transcript
+carries a measured diarization score, the score has floors, and a transcript below a floor loses its
+speaker labels rather than showing uncertain ones. See `MODIFICATIONS.md` §2 and §3.
+
+**This produces a draft for a clinician to read, correct and sign.** It makes no clinical claim and
+nothing it writes is safe to use unreviewed.
+
+## Running the tests
+
+```bash
+cd ambient-scribe/apps/api && uv sync --locked --extra dev
+.venv/bin/python -m pytest ../../../tests -q          # 38 tests, no model, no audio
+```
+
+The end-to-end measurement needs the model files and generated fixtures:
+
+```bash
+python3 ambient-scribe/models/fetch_models.py --root /tmp/models-root
+pip install piper-tts soundfile librosa numpy
+python3 -m piper.download_voices --download-dir tests/fixtures/voices \
+    en_GB-alan-medium en_US-amy-medium en_US-lessac-medium
+python3 tests/fixtures/synthesize.py
+ASR_MODEL_DIR=/tmp/models-root/models/asr \
+DIARIZATION_SEGMENTATION_MODEL=/tmp/models-root/models/diarization/segmentation.onnx \
+DIARIZATION_EMBEDDING_MODEL=/tmp/models-root/models/diarization/embedding.onnx \
+python3 tests/measure.py
+```
+
+## Building the image
+
+```bash
+docker build -f ambient-scribe/infra/docker/scribe.Dockerfile -t scribe-server:dev .
+```
+
+---
+
+Upstream's own README follows, unchanged. Its NGC, NIM and hardware prerequisites describe the
+upstream deployment and not this one.
+
+---
+
 ![image](./images/ambientprovider.png)
 
 ## Table of Contents
