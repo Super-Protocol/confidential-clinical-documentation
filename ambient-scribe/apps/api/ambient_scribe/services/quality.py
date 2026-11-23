@@ -38,7 +38,10 @@ that is the tenant's judgement. The defaults are the measured ones — see
 * `single-speaker` — one speaker found. Not an error: a dictation. Roles are not
   attempted, and note generation is told the transcript is one voice;
 * `absent` — diarization did not run at all (no model, or it raised). The
-  transcript is still produced; nothing is attributed.
+  transcript is still produced; nothing is attributed;
+* `provided` — the transcript was imported already attributed, from a source the
+  data owner approved. Nothing here measured those labels and nothing here
+  second-guesses them; the transcript records where they came from.
 """
 
 from __future__ import annotations
@@ -52,9 +55,14 @@ STATUS_OK = "ok"
 STATUS_UNRELIABLE = "unreliable"
 STATUS_SINGLE = "single-speaker"
 STATUS_ABSENT = "absent"
+# A transcript that arrived already attributed — imported from a gated corpus the
+# data owner approved, rather than produced here. The speaker labels are the
+# owner's, which is better evidence than anything this deployment could infer, and
+# the transcript says where they came from.
+STATUS_PROVIDED = "provided"
 
 # Statuses in which a speaker label may be shown to a reader and a role may be inferred.
-ATTRIBUTABLE = {STATUS_OK}
+ATTRIBUTABLE = {STATUS_OK, STATUS_PROVIDED}
 
 
 def score(segments, turns, audio_seconds: float) -> dict:

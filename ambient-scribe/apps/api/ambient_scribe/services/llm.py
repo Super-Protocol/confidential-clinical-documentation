@@ -423,7 +423,12 @@ def format_transcript_with_speakers(transcript: Transcript) -> str:
     header: list[str] = []
     if roles:
         named = ", ".join(f"Speaker {tag} is the {role.lower()}" for tag, role in sorted(roles.items()))
-        header.append(f"This transcript is speaker-separated and attributed: {named}.")
+        if status == "provided":
+            source = (transcript.diarization or {}).get("source", "the source it was imported from")
+            header.append(f"This transcript arrived already speaker-separated from {source}: "
+                          f"{named}.")
+        else:
+            header.append(f"This transcript is speaker-separated and attributed: {named}.")
     elif status == "single-speaker":
         header.append(
             "This recording contains ONE voice. Treat it as dictation by the clinician. "

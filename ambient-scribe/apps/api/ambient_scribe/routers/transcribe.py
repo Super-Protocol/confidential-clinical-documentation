@@ -2,19 +2,25 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Modified by Super Protocol, 2026: transcripts are persisted, a transcript can
-# be deleted with its recording, and an upload is accepted on what it is rather
-# than on the Content-Type the browser guessed.
+# be deleted with its recording, an already-attributed transcript can be imported
+# from a gated corpus, and an upload is accepted on what it is rather than on the
+# Content-Type the browser guessed.
 
 """Transcription router."""
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, BackgroundTasks, Request
 from fastapi.responses import StreamingResponse
-from typing import Optional
+from typing import List, Optional
 import uuid
 import json
 import asyncio
 from pathlib import Path
 
-from ambient_scribe.models import Transcript, ErrorResponse
+from datetime import datetime
+
+from pydantic import BaseModel
+
+from ambient_scribe.models import ErrorResponse, Transcript, TranscriptSegment
+from ambient_scribe.services.quality import STATUS_ABSENT, STATUS_PROVIDED
 from ambient_scribe.services.asr import transcribe_audio_file, stream_transcribe_audio_file
 from ambient_scribe.deps import get_settings, get_state_dir, get_upload_dir
 from ambient_scribe.utils.store import JsonStore, forget_audio
@@ -283,6 +289,100 @@ async def list_transcripts() -> list[Transcript]:
         transcripts.append(transcript)
     
     return transcripts
+
+# ---------------------------------------------------------------------------
+# Added by Super Protocol, 2026: a transcript that already exists elsewhere.
+#
+# The marketplace gatekeeper serves a data owner's ClickHouse table to a
+# deployment whose published evidence the owner approved, and can withdraw it the
+# moment that evidence changes. A consultation ALREADY transcribed — by another
+# system, by a human typist — is therefore something a tenant can bring here
+# under the owner's control, and generate a note from inside the enclave without
+# the recording ever existing in this deployment.
+#
+# Its speaker labels are the owner's. Nothing here measured them, so nothing here
+# claims to have: the transcript is `provided`, it records where it came from, and
+# the note generation is told so in those words.
+# ---------------------------------------------------------------------------
+ROLE_WORDS = {
+    "clinician": "provider", "doctor": "provider", "physician": "provider",
+    "provider": "provider", "gp": "provider", "nurse": "provider",
+    "patient": "patient", "client": "patient",
+}
+
+
+class ImportedSegment(BaseModel):
+    start: float = 0.0
+    end: float = 0.0
+    text: str
+    speaker: Optional[str] = None
+
+
+class ImportedTranscript(BaseModel):
+    source: str
+    name: str
+    segments: List[ImportedSegment]
+    recorded_at: Optional[str] = None
+
+
+@router.post("/import", response_model=Transcript)
+async def import_transcript(payload: ImportedTranscript) -> Transcript:
+    """Create a transcript from rows a data owner has approved this deployment to read."""
+    if not payload.segments:
+        raise HTTPException(status_code=400, detail="The transcript has no segments")
+
+    # Speaker strings become stable numbers in order of first appearance, and a
+    # string this deployment recognises as a role becomes that role. A string it
+    # does not recognise stays a numbered speaker rather than being guessed at.
+    numbers: dict[str, int] = {}
+    roles: dict[int, str] = {}
+    segments: List[TranscriptSegment] = []
+    for item in payload.segments:
+        tag = None
+        if item.speaker:
+            key = item.speaker.strip().lower()
+            if key not in numbers:
+                numbers[key] = len(numbers)
+                role = ROLE_WORDS.get(key)
+                if role:
+                    roles[numbers[key]] = role
+            tag = numbers[key]
+        segments.append(TranscriptSegment(
+            start=round(float(item.start), 3),
+            end=round(max(float(item.end), float(item.start)), 3),
+            text=item.text.strip(),
+            speaker_tag=tag,
+            confidence=None,
+        ))
+
+    transcript_id = str(uuid.uuid4())
+    attributed = len(numbers) > 0
+    transcript = Transcript(
+        id=transcript_id,
+        segments=segments,
+        language="en",
+        duration=max((s.end for s in segments), default=0.0),
+        filename=payload.name,
+        created_at=datetime.now(),
+        speaker_roles=roles,
+        diarization={
+            "status": STATUS_PROVIDED if attributed else STATUS_ABSENT,
+            "source": payload.source,
+            "speakersFound": len(numbers),
+            "reason": (f"the speaker labels arrived with the transcript from {payload.source}; "
+                       "nothing in this deployment measured them")
+            if attributed else
+            (f"the rows imported from {payload.source} carry no speaker column, so nothing "
+             "is attributed"),
+            "recordedAt": payload.recorded_at or "",
+        },
+    )
+    _transcripts[transcript_id] = transcript
+    logger = logging.getLogger("ambient_scribe.transcribe")
+    logger.info("imported transcript %s from %s: %d segments, %d speakers",
+                transcript_id, payload.source, len(segments), len(numbers))
+    return transcript
+
 
 @router.delete("/{transcript_id}")
 async def delete_transcript(

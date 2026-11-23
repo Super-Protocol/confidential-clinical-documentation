@@ -173,7 +173,23 @@ entry, so every existing call site is unchanged. Beside it:
 * `AUDIO_RETENTION_HOURS` (default 24) is swept by a background task, including once at startup so
   a pod that was down past an expiry does not resurrect a kept file. Negative keeps indefinitely.
 
-## 8. Smaller corrections
+## 8. A transcript that already exists elsewhere
+
+`POST /api/transcribe/import` creates a transcript from rows rather than from a recording. It exists
+because of what the marketplace gatekeeper is: a data owner approves a deployment against its
+published evidence, serves it a ClickHouse table, and withdraws it the moment that evidence changes.
+A consultation already transcribed — by another system, by a human typist — is therefore something a
+tenant can bring into the enclave under the owner's control and generate a note from, with no
+recording in this deployment at all.
+
+Its speaker labels are the owner's, and the code says so rather than claiming them: the transcript's
+status is `provided`, it records the source it came from, and the note generation is told
+"this transcript arrived already speaker-separated from <source>". A speaker string this deployment
+recognises as a role (`clinician`, `doctor`, `patient`, …) becomes that role; one it does not stays a
+numbered speaker rather than being guessed at. Rows with no speaker column produce an unattributed
+transcript, reported as such.
+
+## 9. Smaller corrections
 
 * **`main.py`: CORS.** Upstream sends `allow_origins=["*"]` with `allow_credentials=True`. The
   console in front of this API carries a session cookie, so that is a cross-site request away from
@@ -198,7 +214,7 @@ entry, so every existing call site is unchanged. Beside it:
   the score, in the `complete` event. Upstream attached a speaker to every interim result from a
   diarizer that had heard only the audio so far.
 
-## 9. Packaging
+## 10. Packaging
 
 One image (`infra/docker/scribe.Dockerfile`) instead of three: the API, the built UI and the model
 weights. `models/manifest.json` pins every model file by sha256 and records its licence;
@@ -214,7 +230,7 @@ engine, which is a separate component.
 `pyproject.toml` / `uv.lock` are upstream's notebook environment and are untouched; no image is
 built from them.
 
-## 10. What is NOT in this fork
+## 11. What is NOT in this fork
 
 * `ambient-patient` and `ace-controller-voice-interface` — the patient agent, its Pipecat/WebRTC
   stack and its TTS. A separate product.

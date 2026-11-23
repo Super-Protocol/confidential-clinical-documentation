@@ -110,3 +110,4 @@ audio/
 tests/fixtures/*.wav
 tests/fixtures/*.truth.json
 tests/fixtures/voices/
+state/

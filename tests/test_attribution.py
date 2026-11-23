@@ -146,3 +146,47 @@ async def test_role_detection_is_not_attempted_with_one_speaker():
     t = transcript([s("a", 0)], diarization={"status": "single-speaker", "speakersFound": 1})
     # no HTTP client is patched here: reaching one would be the failure
     assert await asr.detect_speaker_roles(t, settings) == {}
+
+
+def test_a_provided_attribution_is_shown_and_credited():
+    """An imported transcript's labels are the data owner's, and are named as theirs."""
+    out = format_transcript_with_speakers(transcript(
+        [s("Where is the pain?", 0), s("In my chest.", 1, 10)],
+        roles={0: "provider", 1: "patient"},
+        diarization={"status": "provided", "speakersFound": 2,
+                     "source": "acme-consultations"}))
+    assert "already speaker-separated from acme-consultations" in out
+    assert "Provider (Speaker 0): Where is the pain?" in out
+
+
+def test_an_imported_transcript_maps_role_words_and_leaves_the_rest_numbered():
+    import asyncio
+
+    from ambient_scribe.routers.transcribe import ImportedSegment, ImportedTranscript, import_transcript
+
+    result = asyncio.get_event_loop().run_until_complete(import_transcript(ImportedTranscript(
+        source="acme-consultations", name="2026-11-20-harper",
+        segments=[
+            ImportedSegment(start=0, end=5, text="Good morning.", speaker="Clinician"),
+            ImportedSegment(start=5, end=9, text="Morning, doctor.", speaker="patient"),
+            ImportedSegment(start=9, end=12, text="I will take the bloods.", speaker="phlebotomist"),
+        ])))
+    assert result.diarization["status"] == "provided"
+    assert result.diarization["source"] == "acme-consultations"
+    assert result.diarization["speakersFound"] == 3
+    # "Clinician" and "patient" are role words; "phlebotomist" is not, and is not guessed at
+    assert result.speaker_roles == {0: "provider", 1: "patient"}
+    assert [seg.speaker_tag for seg in result.segments] == [0, 1, 2]
+
+
+def test_an_imported_transcript_with_no_speaker_column_is_not_attributed():
+    import asyncio
+
+    from ambient_scribe.routers.transcribe import ImportedSegment, ImportedTranscript, import_transcript
+
+    result = asyncio.get_event_loop().run_until_complete(import_transcript(ImportedTranscript(
+        source="acme-consultations", name="unlabelled",
+        segments=[ImportedSegment(start=0, end=5, text="Good morning.")])))
+    assert result.diarization["status"] == "absent"
+    assert result.speaker_roles == {}
+    assert "carry no speaker column" in result.diarization["reason"]
